@@ -1,0 +1,19 @@
+[
+  {"op":"hello","client":"f1-operator-android","version":1},
+  {"op":"manual_input","seq":1,"direction":"FORWARD","speed_percent":25,"mode":"BOTH","brush_enabled":false,"brush_percent":0,"thrust_enabled":false,"thrust_percent":0},
+  {"op":"manual_input","seq":2,"direction":"STOP","speed_percent":75,"mode":"BACK","brush_enabled":true,"brush_percent":-50,"thrust_enabled":true,"thrust_percent":100},
+  {"op":"manual_stop","reason":"app_not_foreground"},
+  {"op":"initial_pose","x":1.2,"y":3.4,"yaw":1.57,"map_revision":1,"request_id":"pose-1"},
+  {"op":"task","task_type":"rectangle","action":"start","request_id":"task-1"},
+  {"op":"task","task_type":"l","action":"pause","request_id":"task-2"},
+  {"op":"task","task_type":"rectangle","action":"stop","request_id":"task-3"},
+  {"op":"task","task_type":"l","action":"cancel","request_id":"task-4"},
+  {"op":"mapping","action":"start","request_id":"map-1"},
+  {"op":"mapping","action":"save","name":"一号池","request_id":"map-2"},
+  {"op":"mapping","action":"save_end","name":"","request_id":"map-3"},
+  {"op":"mapping","action":"discard","confirm":true,"request_id":"map-4"},
+  {"op":"mapping","action":"list","request_id":"map-5"},
+  {"op":"mapping","action":"preview","name":"一号池","request_id":"map-6"},
+  {"op":"mapping","action":"load","name":"一号池","request_id":"map-7"},
+  {"op":"mapping","action":"retry_export","name":"一号池","request_id":"map-8"}
+]

@@ -1,0 +1,305 @@
+package cn.surface.operator.ui
+
+import android.content.Intent
+import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.*
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cn.surface.operator.OperatorViewModel
+import cn.surface.operator.core.*
+import kotlinx.serialization.json.*
+
+val Teal=Color(0xFF087F8C)
+val Ink=Color(0xFF193744)
+val Muted=Color(0xFF637887)
+val Danger=Color(0xFFBA3A35)
+private val Background=Color(0xFFF1F5F7)
+
+@Composable fun OperatorApp(vm:OperatorViewModel) {
+    val s by vm.state.collectAsStateWithLifecycle()
+    MaterialTheme(colorScheme=lightColorScheme(primary=Teal,secondary=Ink,background=Background,surface=Color.White,error=Danger)) {
+        Surface(Modifier.fillMaxSize(),color=Background) {
+            Column(Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
+                Header(s,vm)
+                BoxWithConstraints(Modifier.weight(1f)) {
+                    val wide=maxWidth>=900.dp
+                    val controlWidth=if(maxWidth>=1200.dp) 350.dp else 316.dp
+                    if(wide) Row(Modifier.fillMaxSize().padding(12.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                        Navigation(s,vm,true)
+                        if(s.page in setOf(Page.TASK,Page.MANUAL,Page.MAPPING)) {
+                            MapPanel(s,vm::candidate,Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(18.dp)))
+                            Panel(Modifier.width(controlWidth).fillMaxHeight()) { PageContent(s,vm) }
+                        } else Panel(Modifier.weight(1f).fillMaxHeight()) { PageContent(s,vm) }
+                    } else Column(Modifier.fillMaxSize()) {
+                        Navigation(s,vm,false)
+                        if(s.page in setOf(Page.TASK,Page.MANUAL,Page.MAPPING)) {
+                            MapPanel(s,vm::candidate,Modifier.fillMaxWidth().weight(1f).heightIn(min=180.dp))
+                            Panel(Modifier.fillMaxWidth().weight(1.1f)) { PageContent(s,vm) }
+                        } else Panel(Modifier.fillMaxSize()) { PageContent(s,vm) }
+                    }
+                }
+                Footer(s)
+            }
+        }
+        s.preview?.let { grid ->
+            Dialog(onDismissRequest=vm::closePreview,properties=DialogProperties(usePlatformDefaultWidth=false)) {
+                Surface(Modifier.fillMaxSize(.9f),shape=RoundedCornerShape(20.dp)) {
+                    Column {
+                        Row(Modifier.fillMaxWidth().padding(12.dp),verticalAlignment=Alignment.CenterVertically) {
+                            Text(s.previewName,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge)
+                            TextButton(onClick=vm::closePreview){Text("关闭预览")}
+                        }
+                        MapPanel(s,{},Modifier.weight(1f),grid)
+                    }
+                }
+            }
+        }
+    }
+}
+@Composable private fun Header(s:OperatorState,vm:OperatorViewModel) {
+    Row(Modifier.fillMaxWidth().background(Ink).padding(horizontal=16.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(16.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text("SURFACE / 水面机器人",color=Color.White,fontWeight=FontWeight.Bold,fontSize=19.sp)
+            Text(if(s.demo) "模拟模式 · 不连接硬件" else s.connection,color=if(s.fresh) Color(0xFF89E4CB) else Color(0xFFF2CE8A),fontSize=12.sp)
+        }
+        if(s.connected) Text(if(!s.fresh) "数据过期" else if(!s.operator) "其他端控制" else if(s.driving) "手动驾驶" else "观察 / 待操作",color=Color.White,fontSize=13.sp)
+        if(s.busy || s.canTaskAction("stop")) Button(onClick={vm.task("stop")},enabled=s.canTaskAction("stop"),colors=ButtonDefaults.buttonColors(containerColor=Danger),shape=RoundedCornerShape(12.dp)) {Text("停止任务")}
+        Button(onClick=vm::explicitStop,enabled=s.operator,colors=ButtonDefaults.buttonColors(containerColor=Danger),shape=RoundedCornerShape(12.dp),contentPadding=PaddingValues(14.dp,12.dp)) {Text("停止手动输出")}
+    }
+}
+@Composable private fun Navigation(s:OperatorState,vm:OperatorViewModel,vertical:Boolean) {
+    @Composable fun item(p:Page) {
+        val selected=p==s.page
+        Surface(color=if(selected) Teal else Color.Transparent,shape=RoundedCornerShape(12.dp),modifier=Modifier.width(76.dp).clickable {vm.page(p)}) {
+            Column(Modifier.padding(vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+                Text(p.symbol,fontSize=22.sp,color=if(selected) Color.White else Muted)
+                Text(p.title,fontSize=12.sp,color=if(selected) Color.White else Ink)
+            }
+        }
+    }
+    if(vertical) Column(Modifier.width(76.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(5.dp)){Page.entries.forEach {item(it)}}
+    else Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(4.dp),horizontalArrangement=Arrangement.SpaceEvenly){Page.entries.forEach {item(it)}}
+}
+@Composable private fun Panel(modifier:Modifier,content:@Composable ColumnScope.()->Unit) {
+    Surface(modifier,shape=RoundedCornerShape(18.dp)) { Column(Modifier.verticalScroll(rememberScrollState()).padding(18.dp),verticalArrangement=Arrangement.spacedBy(12.dp),content=content) }
+}
+@Composable private fun PageContent(s:OperatorState,vm:OperatorViewModel) {
+    when(s.page) {
+        Page.TASK->TaskPage(s,vm)
+        Page.MANUAL->ManualPage(s,vm)
+        Page.MAPPING->MappingPage(s,vm)
+        Page.MAPS->MapsPage(s,vm)
+        Page.DIAGNOSTICS->Diagnostics(s,vm)
+        Page.SETTINGS->Settings(s,vm)
+    }
+}
+@Composable private fun Title(text:String,subtitle:String) {
+    Text(text,style=MaterialTheme.typography.headlineSmall,color=Ink,fontWeight=FontWeight.Bold)
+    Text(subtitle,style=MaterialTheme.typography.bodySmall,color=Muted)
+}
+@Composable private fun Info(text:String,warning:Boolean=false) {
+    Surface(color=if(warning) Color(0xFFFFF2DD) else Color(0xFFEDF5F6),shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth()) {
+        Text(text,Modifier.padding(12.dp),style=MaterialTheme.typography.bodyMedium,color=if(warning) Color(0xFF805414) else Ink)
+    }
+}
+@Composable private fun Action(label:String,enabled:Boolean=true,danger:Boolean=false,onClick:()->Unit) {
+    Button(onClick,enabled=enabled,modifier=Modifier.fillMaxWidth().heightIn(min=52.dp),shape=RoundedCornerShape(12.dp),
+        colors=ButtonDefaults.buttonColors(containerColor=if(danger) Danger else Teal)) {Text(label)}
+}
+@Composable private fun TaskPage(s:OperatorState,vm:OperatorViewModel) {
+    Title("清洗作业","先定位，再检查启动条件")
+    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        listOf("rectangle" to "矩形清洗","l" to "L 清洗").forEach { (kind,label)->
+            FilterChip(s.taskKind==kind,{vm.taskKind(kind)},label={Text(label)},enabled=s.canSelectTask)
+        }
+    }
+    val loc=s.localization;val task=s.task
+    val locText=when {
+        !s.fresh || !loc.flag("fresh")->"定位状态未知或过期"
+        !loc.flag("initial_pose_received")->"尚未设置初始位姿"
+        loc.flag("ready")->"定位已就绪"
+        else->"等待定位稳定 ${"%.1f".format(loc.num("stable_elapsed_sec"))} / ${"%.1f".format(loc.num("stable_sec",1.0))} 秒"
+    }
+    Info(locText+loc.str("reason").takeIf {it.isNotBlank()}?.let {"\n$it"}.orEmpty())
+    OutlinedButton(onClick={vm.pick(!s.picking)},enabled=s.canPose,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text(if(s.picking) "取消位姿编辑" else "设置初始位置与船头方向")}
+    if(s.picking) {
+        s.candidate?.let { Text("x ${"%.2f".format(it.x)} m  ·  y ${"%.2f".format(it.y)} m\n船头 ${"%.1f".format(Math.toDegrees(it.yaw))}°",color=Muted) }
+        Action("发布初始位姿",s.canPose && s.candidate!=null,onClick=vm::publishPose)
+    }
+    HorizontalDivider()
+    Text(if(s.fresh && task.flag("fresh")) phaseLabels[task.str("phase")] ?: task.str("phase","等待任务状态") else "任务状态未知",style=MaterialTheme.typography.titleLarge,color=Teal)
+    Text(if(s.demo) "模拟，不驱动硬件" else if(s.fresh && task.flag("fresh")) {if(task.flag("output_enabled")) "实际输出模式" else "预览模式，不驱动硬件"} else "输出模式未确认",color=Muted)
+    val blockers=task.arr("start_blockers").mapNotNull { (it as? JsonObject)?.str("message") }.filter {it.isNotBlank()}
+    Info(when {
+        !s.fresh->"连接中断或遥测过期，禁止启动"
+        !s.taskSupported->"网关未声明完整任务能力"
+        !s.operator->"其他操作端占用控制权"
+        s.pending.isNotEmpty()->"操作结果待确认；不会自动重发"
+        blockers.isNotEmpty()->blockers.joinToString("\n")
+        s.canStart->"启动条件已满足"
+        else->"请查看当前阶段和机器人状态"
+    },!s.canStart)
+    Action("开始新任务",s.canStart){vm.task("start")}
+    Action("停止任务",s.canTaskAction("stop"),true){vm.task("stop")}
+    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        OutlinedButton({vm.task("pause")},enabled=s.canTaskAction("pause"),modifier=Modifier.weight(1f)){Text("暂停")}
+        OutlinedButton({vm.task("cancel")},enabled=s.canTaskAction("cancel"),modifier=Modifier.weight(1f)){Text("取消任务")}
+    }
+    Text("暂停后需取消再开始，不支持断点继续。停止请求成功不代表船体惯性漂移已结束。",style=MaterialTheme.typography.bodySmall,color=Muted)
+    if(task.str("run_id").isNotBlank()) Text("任务 ${task.str("run_id")}\n起始墙 ${task.str("start_edge_id","—")} · 当前墙 ${task.str("current_edge_id","—")}",color=Muted)
+    if(task.str("reason").isNotBlank()) Text(task.str("reason"),color=Muted)
+    if(task.flag("returning_to_start")) Info("正在补齐起始边前段")
+    if(task.str("completion_scope")=="remaining_l_route") Text("本次仅执行剩余 L 路线，到终点停止；不返回、不补洗。",style=MaterialTheme.typography.bodySmall)
+    if(task.str("phase")=="COMPLETE") {
+        Info((if(s.fresh && task.flag("fresh")) "本次路线执行完成" else "历史结果：本次路线执行完成")+"\n"+if(task.flag("coverage_complete")) "覆盖记录完整" else "覆盖记录仍有缺口",!task.flag("coverage_complete"))
+        if(task.long("completed_at_ns")>0) Text("完成时间："+java.time.Instant.ofEpochSecond(task.long("completed_at_ns")/1_000_000_000).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString(),style=MaterialTheme.typography.bodySmall)
+        Text("剩余接触区间：${task["remaining_contact_intervals"] ?: "未提供"}",style=MaterialTheme.typography.bodySmall)
+    }
+    Text("靠近阶段不做路径搜索或环境碰撞检查。",style=MaterialTheme.typography.bodySmall,color=Muted)
+}
+
+@Composable private fun HoldButton(label:String,direction:String,s:OperatorState,vm:OperatorViewModel,modifier:Modifier=Modifier) {
+    val enabled=s.canDrive
+    val active=enabled && s.manual.direction==direction
+    val currentDirection by rememberUpdatedState<(String)->Unit>(vm::direction)
+    val currentCancel by rememberUpdatedState<()->Unit>({vm.stopManual("touch_cancelled")})
+    Surface(modifier.sizeIn(minWidth=72.dp,minHeight=72.dp).semantics {contentDescription="按住$label，松开停止主驱动"}
+        .pointerInput(enabled) {
+            if(enabled) awaitEachGesture {
+                var released=false
+                try {
+                    val down=awaitFirstDown(requireUnconsumed=false);down.consume();currentDirection(direction)
+                    while(true) {
+                        val event=awaitPointerEvent()
+                        val pointer=event.changes.find {it.id==down.id}
+                        if(pointer==null || event.changes.count {it.pressed}>1 || pointer.isConsumed) break
+                        if(!pointer.pressed) {released=true;pointer.consume();break}
+                        if(pointer.position.x !in 0f..size.width.toFloat() || pointer.position.y !in 0f..size.height.toFloat()) break
+                        pointer.consume()
+                    }
+                } finally {if(released) currentDirection("STOP") else currentCancel()}
+            }
+        },shape=RoundedCornerShape(16.dp),color=if(active) Teal else if(enabled) Color(0xFFE8F2F4) else Color(0xFFEDEFF1)) {
+        Box(contentAlignment=Alignment.Center){Text(label,fontSize=23.sp,color=if(active) Color.White else if(enabled) Ink else Color.Gray)}
+    }
+}
+@Composable private fun ManualPage(s:OperatorState,vm:OperatorViewModel) {
+    Title("手动驾驶","按住运行 · 松开方向键仅停止主驱动")
+    if(!s.driving) Action("启用手动驾驶",s.manualAllowed,onClick=vm::armManual)
+    else Info("手动已使能 · 离开页面或失焦将停用")
+    if(!s.manualAllowed) Info(if(!s.fresh) "等待新鲜遥测" else if(!s.operator) "其他操作端占用控制权" else "任务运行、操作待确认或界面中断时禁止驾驶",true)
+    Text("PWM 档位（非实测航速）",fontWeight=FontWeight.SemiBold)
+    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf(25,50,75).forEach {v->FilterChip(s.manual.speed==v,{vm.manual(s.manual.copy(speed=v))},label={Text("$v%")},enabled=s.canDrive)}}
+    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf("FRONT" to "前轮","BOTH" to "全部","BACK" to "后轮").forEach {(v,label)->FilterChip(s.manual.mode==v,{vm.manual(s.manual.copy(mode=v))},label={Text(label)},enabled=s.canDrive)}}
+    Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        HoldButton("↑","FORWARD",s,vm)
+        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            HoldButton("←","LEFT",s,vm)
+            FilledTonalButton({vm.direction("STOP")},enabled=s.canDrive,modifier=Modifier.size(72.dp),shape=RoundedCornerShape(16.dp)){Text("停")}
+            HoldButton("→","RIGHT",s,vm)
+        }
+        HoldButton("↓","REVERSE",s,vm)
+    }
+    Auxiliary("滚刷",s.manual.brush,s.manual.brushPercent,s.canDrive,{vm.manual(s.manual.copy(brush=it))},{vm.manual(s.manual.copy(brushPercent=it))})
+    Auxiliary("第五电推",s.manual.thrust,s.manual.thrustPercent,s.canDrive && s.telemetry.obj("state").flag("allow_fifth_thruster"),{vm.manual(s.manual.copy(thrust=it))},{vm.manual(s.manual.copy(thrustPercent=it))})
+    Text("滚刷和第五电推独立运行；顶部“停止手动输出”关闭全部手动输出。",style=MaterialTheme.typography.bodySmall,color=Muted)
+}
+@Composable private fun Auxiliary(label:String,on:Boolean,value:Int,enabled:Boolean,toggle:(Boolean)->Unit,change:(Int)->Unit) {
+    HorizontalDivider()
+    Row(verticalAlignment=Alignment.CenterVertically) {Text(label,Modifier.weight(1f),fontWeight=FontWeight.SemiBold);Text("$value%");Switch(on,toggle,enabled=enabled)}
+    Slider(value.toFloat(),{change(it.toInt())},valueRange=-100f..100f,steps=39,enabled=enabled)
+}
+@Composable private fun MappingPage(s:OperatorState,vm:OperatorViewModel) {
+    var name by remember {mutableStateOf("")}
+    var confirm by remember {mutableStateOf(false)}
+    Title("建图","使用手动驾驶探索，地图保存在机器人端")
+    Info(if(s.mappingSupported) "模式：${s.runtime.str("phase","待机")}\n${s.runtime.str("message")}" else "需要受管网关 operator_system.launch.py",!s.mappingSupported)
+    Action("开始建图",s.canMapping("start")){vm.mapping("start")}
+    OutlinedButton({vm.page(Page.MANUAL)},modifier=Modifier.fillMaxWidth()){Text("前往手动驾驶探索")}
+    OutlinedTextField(name,{if(it.length<=80) name=it},label={Text("地图名称")},placeholder={Text("留空自动命名")},modifier=Modifier.fillMaxWidth().onFocusChanged {if(it.isFocused) vm.stopManual("text_input")},singleLine=true)
+    Action("保存快照并继续",s.canMapping("save")){vm.mapping("save",name)}
+    Action("保存并结束建图",s.canMapping("save_end")){vm.mapping("save_end",name)}
+    OutlinedButton({vm.stopManual("confirm_discard");confirm=true},enabled=s.canMapping("discard"),modifier=Modifier.fillMaxWidth()){Text("放弃未保存的建图",color=Danger)}
+    val saved=s.runtime.obj("last_saved")
+    if(saved.isNotEmpty()) Info("最近保存：${saved.str("name")}\n${saved.arr("paths").joinToString("\n") {(it as? JsonPrimitive)?.contentOrNull.orEmpty()}}")
+    Text("保存位置：${s.runtime.str("maps_directory","Nano 工作空间 maps/")}\n保存失败会保留建图；可到地图库重试导出。",style=MaterialTheme.typography.bodySmall,color=Muted)
+    if(confirm) AlertDialog(onDismissRequest={confirm=false},title={Text("放弃本次建图？")},text={Text("未保存的内容将丢失，此前保存的地图会保留。")},confirmButton={TextButton({confirm=false;vm.mapping("discard",confirmed=true)}){Text("放弃",color=Danger)}},dismissButton={TextButton({confirm=false}){Text("返回")}})
+}
+@Composable private fun MapsPage(s:OperatorState,vm:OperatorViewModel) {
+    Title("地图库","预览与加载分开，加载后需重新设置初始位姿")
+    Text("当前地图：${s.runtime.str("current_map","未加载").ifBlank {"未加载"}}",color=Teal)
+    Action("刷新列表",s.canMapping("list")){vm.mapping("list")}
+    if(s.catalog.isEmpty()) Info("尚无地图列表，请连接受管网关后刷新。")
+    s.catalog.forEach {entry->
+        val name=entry.str("name")
+        Surface(Modifier.fillMaxWidth().clickable(enabled=s.pending.isEmpty()){vm.selectMap(name)},shape=RoundedCornerShape(12.dp),color=if(s.selectedMap==name) Color(0xFFDDF1F0) else Background) {
+            Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically) {
+                RadioButton(s.selectedMap==name,{vm.selectMap(name)},enabled=s.pending.isEmpty())
+                Column {Text(name,fontWeight=FontWeight.SemiBold);Text(if(entry.flag("valid")) "文件完整 · ${entry.str("saved_at")}" else if(entry.flag("recoverable")) "待导出 · ${entry.str("reason")}" else "不可用 · ${entry.str("reason")}",style=MaterialTheme.typography.bodySmall,color=Muted)}
+            }
+        }
+    }
+    Action("预览所选地图",s.canMapping("preview")){vm.mapping("preview")}
+    Action("加载所选地图",s.canMapping("load")){vm.mapping("load")}
+    OutlinedButton({vm.mapping("retry_export")},enabled=s.canMapping("retry_export"),modifier=Modifier.fillMaxWidth()){Text("重试快照导出")}
+    Info("建图和固定地图定位互斥。地图保存成功不代表适用于全部清洗任务。")
+}
+@Composable private fun Settings(s:OperatorState,vm:OperatorViewModel) {
+    var url by remember {mutableStateOf(vm.savedUrl)}
+    Title("连接设置","平板与 Nano 接入同一局域网")
+    OutlinedTextField(url,{url=it},label={Text("网关 WebSocket 地址")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+    Action("连接机器人"){vm.connect(url)}
+    OutlinedButton({vm.connect(url,true)},modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("进入模拟模式 · 不连接硬件")}
+    OutlinedButton(vm::disconnect,modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("断开连接 / 释放操作端")}
+    Info("连接后先观察状态。手动页明确启用驾驶后才发送运动意图。\n断线不会主动取消已经启动的自动任务；退出不会结束机器人端建图。")
+    Text("当前版本 0.1.0 · f1-operator-v1\n主要适配 11.5 英寸横屏，同时支持竖屏与分屏。\n当前版本面向可信局域网现有 ws:// 网关。",color=Muted)
+}
+@Composable private fun Diagnostics(s:OperatorState,vm:OperatorViewModel) {
+    val context=LocalContext.current
+    var confirm by remember {mutableStateOf(false)}
+    Title("连接与运行诊断","数据来自网关，不以请求发送成功代替执行结果")
+    val control=s.telemetry.obj("state")
+    Info("连接：${s.connection}\n遥测：${if(s.fresh) "新鲜" else "已过期"}\n控制端：${s.telemetry.str("active_client","未占用")}\n硬件状态：${control.str("state","未知")}\n控制源：${control.str("source","未知")}\n硬件数据：${if(s.fresh && s.telemetry.flag("control_fresh")) "新鲜" else "未知或过期"}\n输出许可：${control.flag("motion_authorized")}\nCTRL / ACK 年龄：${control.num("ctrl_age_sec")} / ${control.num("ack_age_sec")} 秒\n${control.str("reason")}")
+    if(s.pending.isNotEmpty()) {
+        Info("待确认操作：\n"+s.pending.values.joinToString("\n") {"${it.command.str("op")} / ${it.action} · ${(s.now-it.sentAt)/1000}s"},true)
+        OutlinedButton({confirm=true},enabled=s.fresh && !s.busy && s.pending.values.all {s.now-it.sentAt>5000}) {Text("已核对机器人状态，清除本地待确认")}
+    }
+    OutlinedButton({
+        vm.stopManual("export_log")
+        val raw="SurfaceOperator 0.1.0\n模式：${if(s.demo) "模拟" else "真实连接"}\n${s.logs.joinToString("\n")}\n最新遥测（可能已过期）：\n${s.telemetry}"
+        // Keep the chooser Intent well below Android's Binder transaction limit.
+        val report=raw.take(48000)+if(raw.length>48000) "\n[大体积遥测已截断]" else ""
+        try {
+            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {type="text/plain";putExtra(Intent.EXTRA_SUBJECT,"机器人诊断日志");putExtra(Intent.EXTRA_TEXT,report)},"导出诊断日志"))
+        } catch(_:android.content.ActivityNotFoundException) {vm.notice("未找到可接收文本日志的应用")}
+    }){Text("导出诊断日志")}
+    Text("已协商能力：${s.capabilities.joinToString()}",style=MaterialTheme.typography.bodySmall,color=Muted)
+    HorizontalDivider();s.logs.take(40).forEach {Text(it,style=MaterialTheme.typography.bodySmall,color=Ink)}
+    if(confirm) AlertDialog(onDismissRequest={confirm=false},title={Text("清除本地待确认提示？")},text={Text("这不会停止机器人，也不会重发请求。仅在已核对任务与建图状态后使用。")},confirmButton={TextButton({confirm=false;vm.clearUncertain()}){Text("已核对，清除")}},dismissButton={TextButton({confirm=false}){Text("返回")}})
+}
+@Composable private fun Footer(s:OperatorState) {
+    Column(Modifier.fillMaxWidth().background(Color(0xFFE6EEF1)).padding(horizontal=16.dp,vertical=6.dp)) {
+        val distance=s.wallDistance
+        Text("船体中心距左墙：${distance?.let {"%.3f m".format(it)} ?: "无有效观测"}  ·  "+
+            if(s.task.obj("actual_track").flag("truncated")) "历史轨迹已截断" else "历史轨迹 ${s.task.obj("actual_track").long("point_count")} 点",
+            style=MaterialTheme.typography.labelMedium,color=Ink)
+        Text(s.message,maxLines=2,style=MaterialTheme.typography.bodySmall,color=Muted)
+    }
+}
