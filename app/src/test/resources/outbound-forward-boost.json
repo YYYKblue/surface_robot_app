@@ -1,0 +1,6 @@
+[
+  {"op":"task","task_type":"rectangle","action":"set_forward_boost","enabled":true,"request_id":"boost-rectangle-on"},
+  {"op":"task","task_type":"rectangle","action":"set_forward_boost","enabled":false,"request_id":"boost-rectangle-off"},
+  {"op":"task","task_type":"l","action":"set_forward_boost","enabled":true,"request_id":"boost-open-on"},
+  {"op":"task","task_type":"l","action":"set_forward_boost","enabled":false,"request_id":"boost-open-off"}
+]

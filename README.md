@@ -4,7 +4,8 @@
 
 ## 运行
 
-交付安装包：`dist/SurfaceOperator-0.1.0-debug.apk`；源码包：`dist/SurfaceOperator-0.1.0-source.zip`。
+当前交付安装包：`dist/SurfaceOperator-0.5.0-debug.apk`；源码包：`dist/SurfaceOperator-0.5.0-source.zip`。
+旧版安装包与源码仍保留，便于对照；系统通常不允许直接覆盖降级。
 Gradle 原始构建产物：`app/build/outputs/apk/debug/app-debug.apk`。这是开发调试签名 APK，不是正式发布签名版本。
 
 1. 将 APK 传到 Android 8.0 或以上设备，按系统提示允许该来源安装。
@@ -19,15 +20,17 @@ Gradle 原始构建产物：`app/build/outputs/apk/debug/app-debug.apk`。这是
 
 - WebSocket `f1-operator-v1`，能力协商、单活动端提示、自动重连；不重发旧运动或离散命令。
 - 手动方向、25/50/75 PWM 档位、FRONT/BOTH/BACK 轮组、独立滚刷和第五电推（-100～100%，后者受网关许可门控）。
-- 初始位姿、定位门控、矩形/L 任务开始、暂停、停止、取消；阶段、原因、路线结束与覆盖结果分开显示。
+- 初始位姿、定位门控、矩形/开放多边任务开始、暂停、停止、取消；阶段、原因、路线结束与覆盖结果分开显示。
+- 主电机提速开关：按任务类型独立设置，显示机器人确认的配置和当前辅助状态，运行中及暂停时锁定。
 - 栅格地图、船头、雷达、起始区域、目标段与分段历史轨迹；缩放、平移、全图、船体回中；左墙距离。
 - 建图开始、保存快照、保存并结束、确认放弃；地图列表、独立预览、加载、重试导出及机器人端保存路径。
-- 遥测过期与操作待确认提示、诊断日志分享导出（单次最多 48,000 字符，超长遥测标明截断）。
+- 遥测过期与操作待确认提示、按来源/关键词筛选诊断日志、展开详情及完整文本文件导出。
 - 全功能内置 Mock，默认不驱动硬件。
 
 ## 机器人端
 
-接口核对基线：`YYYKblue/surface_robot` / `feature/op`，提交 `53692ef391fd22bf20ec5b51622ac3b7e92574d4`（本次拉取分支仍为该提交）。
+当前接口核对基线：`YYYKblue/surface_robot` / `feature/Lplus`，提交 `107674769668a0a00a6c2009e38237bc57a04832`（2026-11-08 拉取）。
+兼容 `feature/upspeed` 提交 `7598964f169a7c21d3e92621431fd92891fc73c2` 和 `feature/op` 提交 `53692ef391fd22bf20ec5b51622ac3b7e92574d4` 的原有控制接口。
 
 本次没有修改 ROS 工作空间。全功能需要受管入口，普通独立网关不提供建图与地图管理：
 
@@ -60,19 +63,90 @@ ros2 launch f1_operator_gateway operator_system.launch.py \
 .\gradlew.bat assembleDebug testDebugUnitTest lintDebug
 ```
 
-可选：拉取原仓库到被忽略的 `reference/surface_robot`，校验出站报文合同：
+可选：拉取参考仓库，校验出站报文并用上游真实诊断记录器生成回放测试数据：
 
 ```powershell
-git clone --depth 1 --branch feature/op https://github.com/YYYKblue/surface_robot.git reference/surface_robot
-python tools/check_gateway_contract.py
+git clone --depth 1 --branch feature/Lplus https://github.com/YYYKblue/surface_robot.git reference/surface_robot_Lplus_geometry
+python tools/check_gateway_contract.py --forward-boost
+python tools/generate_diagnostic_fixture.py
+python tools/generate_track_fixture.py
 ```
 
 `tools/check_gateway_contract.py` 只调用原项目纯 Python 解码器，不启动 ROS 或连接硬件。
+上述脚本均可传 `--reference` 指定参考源码；契约检查可分别使用 `reference/surface_robot_Lplus_boost`、`reference/surface_robot_Lplus`、`reference/surface_robot_upspeed` 和 `reference/surface_robot` 检查旧版本。提速前的版本省略 `--forward-boost`；轨迹回放生成需要包含 `expected_track.py` 的新控制器。
 
 单元测试报告：`app/build/reports/tests/testDebugUnitTest/index.html`。
 Lint 报告：`app/build/reports/lint-results-debug.html`。
 
-## 本次验证（2026-11-02）
+## v0.5.0 墙距、停车点与理想轨迹（2026-11-08）
+
+- 核对新控制器参数：船中心到左墙的开刷/侧推控制范围为 **32–36 cm**，名义目标墙距仍为 **33 cm**，不是区间中点 34 cm。常规沿墙终点停车距离改为 **40 cm**；带地图边任务按船中心沿当前墙的投影距墙端计算，不是船头净空。
+- 实机蓝虚线直接使用机器人 `expected_track.cleaning_segments`。上游以“墙长减 `front_stop_m`”生成船中心停车终点；起点由接触起点减刷头纵向偏移换算。App 不做二次坐标偏移或缩短目标段，各边独立显示，不把换边连接成清洗目标。
+- 当 `expected_track.basis=boat_center_stop` 且参数合法、地图/坐标系匹配、任务和遥测新鲜时，目标段末端显示橙色停车方框及厘米标注；图例显示下发的 `wall_target_m`、`wall_band_min_m/max_m`、`front_stop_m`，不会把现场自定义配置强制显示成默认值。
+- 旧控制器缺少元数据时继续显示其原目标线，不添加新停车标记或参数图例。关闭轨迹、地图预览、遥测/任务过期或地图不匹配时隐藏新增标记及参数。
+- 橙框是各墙段常规沿墙停车位置；矩形补洗可能在首次接触位置附近提前结束。最后一边结束停止，其他边才进入换边。目标线不是完整转弯/避障规划，也不代替覆盖统计或物理停稳判断。
+- 模拟矩形和五段开放墙链按 33 cm 侧向偏移、40 cm 中心停车距离生成独立目标段，播放位置使用同一目标段；模拟开刷范围为 32–36 cm。主电机提速的 80 cm 近端撤销阈值保持不变，模拟从墙端计算，不误用到停车点的剩余距离。
+- `tools/generate_track_fixture.py` 调用上游真实 `cleaning_segments` 生成默认、旋转、自定义停车距离和中途起始回放，用于核对 App 标记和模拟几何。不会启动 ROS 或连接硬件。
+
+本版验证：`assembleDebug`、`testDebugUnitTest`、`lintDebug` 通过，46 项测试（新增 5 项），Lint 0 错误 / 12 警告。验证覆盖上游端点原样显示、33 cm 名义目标、40 cm 停车、旋转地图、自定义 55 cm 参数、中途任务墙段筛选、旧字段兼容、过期/地图不匹配/预览隐藏，以及模拟换边时的中心距离。21 组出站报文通过新网关及上一版提速网关；原 17 组报文通过提速前 Lplus 和 op 网关。
+
+版本码升至 5，使用同一调试签名，可覆盖安装 v0.4.0。地图绘制按当前画布尺寸缩放并限制在地图区域内，避免新增图例导致首帧越界。交付测试渲染截图位于 `dist/screenshots-v0.5.0/`，包括矩形、开放墙链和窄窗口；它们不是实机截图。
+
+需要机器人端实际部署新参数和新控制器；更新 APK 不会修改 Nano 的参数文件。新版轨迹与换边效果仍需实船复测。
+
+## v0.4.0 主电机提速（2026-11-08）
+
+- “清洗作业”增加主电机提速开关，矩形与开放多边任务分别读取机器人端设置。能力标记为 `forward_boost`；设置使用 `task/set_forward_boost`，包含当前 `task_type`、布尔 `enabled` 与唯一 `request_id`。
+- 仅在 `IDLE/CANCELLED/STOPPED/COMPLETE`、任务状态新鲜、控制权和地图一致、服务允许且没有其他待确认操作时可设置。运行、获取控制权、暂停、选位姿、退后台、断线和状态过期时锁定；无需等定位就绪才设置，但启动仍使用原定位门控。
+- 点击不会提前改写开关。设置期间阻止重复请求和任务启动，直到网关完成服务及后续状态确认。失败保留机器人实际值；超时保留“结果待确认”，不自动重发，也不凭相同布尔值提前确认。若断线丢失最终回复，重连读取实际值；核对状态并确认网关不忙后，可沿用诊断页清除本地待确认提示。
+- 开关在当前控制器会话内保留，停止/取消不会自动关掉；重载地图或控制器重启后由机器人恢复默认关闭。App 不把选项存为本地自动恢复设置，不重放旧操作。旧网关不声明能力或旧控制器缺少字段时禁用开关，原任务仍可使用。
+- 机器人负责提速控制：稳定沿墙时四主电机 25 档前进辅助；船中心沿当前墙方向距末端严格大于 0.80 m 才可启用，进入 0.80 m 内（含边界）本墙段不再恢复，矩形补洗按实际任务结束位置提前撤销；航向纠偏优先。App 不重算控制输出、不把 PWM 档位称作实测速度。
+- 状态区分开关启用、前进辅助指令有效、纠偏、近端撤销、等待沿墙和等待任务。预览/模拟与实际输出模式分开标识；`forward_boost_active` 是指令状态，不是实测推力。
+- 模拟网关增加延迟确认、两类任务独立设置、运行/暂停锁定、重载复位及沿墙/近端状态回放。模拟不连接硬件。
+
+验证：`assembleDebug`、完整 `testDebugUnitTest`、`lintDebug` 通过，共 41 项测试（新增 6 项）；Lint 0 错误 / 12 警告。最终加强本地 WebSocket 测试后又单独通过该测试及 Lint，当前测试 HTML 对应这一次定向复测。验证覆盖非布尔/未知状态、权限与阶段门控、不提前切换显示、拒绝、超时、重连不重放、确认前不发送启动命令，以及两任务配置独立和地图重载复位。
+
+新版解码器接受 21 组报文（原有 17 组与新增 4 组提速开关）；旧 Lplus、upspeed、op 解码器分别接受原有 17 组报文，新命令仅在能力协商通过后发送。版本码由 3 升至 4，签名与 v0.3.0 一致，可覆盖安装。交付截图位于 `dist/screenshots-v0.4.0/tablet-forward-boost.png` 和 `tablet-forward-boost-compact.png`，属于本机测试渲染。
+
+本版未修改 ROS 工作空间；机器人端需要部署上述新提交的网关和清洗控制器。新增功能尚未进行实船复测。
+
+## v0.3.0 开放多边清洗适配（2026-11-08）
+
+- “L 清洗”更新为“开放多边清洗”，协议任务类型仍为 `l`，不改变现有启动、暂停、停止、取消命令。
+- 新增 `LEFT_EXIT_WALL`、`LEFT_SHIFT_TO_ENTRY`、`TURN_LEFT_TO_NEXT_EDGE` 中文阶段说明；未知阶段仍显示原始状态码。
+- 同时识别 `remaining_open_route` 与旧的 `remaining_l_route`，明确本次仅清洗起始位置之后的墙段，到末端停止，不返回、不补洗；要清洗全链应从首边入口附近开始。路线完成与本次要求区间的覆盖结果分别显示。
+- 显示当前墙链及候选数量。界面从 1 开始编号，上游 `route_chain_index` 从 0 开始；缺失或无效字段不显示，遥测过期标记“上次记录”。独立墙链不自动转场，切换需修改机器人端配置并重启，App 未增加网关不支持的切换命令。
+- 地图继续按每条清洗目标段独立绘制，没有固定边数限制。模拟开放任务包含五段目标和左右转换边阶段；模拟位置/阶段仅用于界面回放，不模拟真实换边动力学、净空或去污效果。
+- 保留 v0.2.0 日志功能与旧网关兼容性。版本码升至 3，仍为调试签名。
+
+本版验证：`assembleDebug`、`testDebugUnitTest`、`lintDebug` 成功；35 项测试通过（新增 4 项），Lint 0 错误 / 12 警告。新增验证涵盖左转换边期间的停止/暂停/取消与手动锁定、新旧完成范围、无效/缺失墙链字段、过期状态展示，以及五段模拟路线的左右转换边和完成缺口。17 组出站命令分别通过 `feature/Lplus`、`feature/upspeed`、`feature/op` 三个版本的解码器。
+
+新旧 APK 的签名证书一致，版本码由 2 升至 3，可覆盖安装 v0.2.0。横屏与窄窗口测试渲染图位于 `dist/screenshots-v0.3.0/tablet-open-route.png` 和 `tablet-open-route-compact.png`；它们不是实机截图。
+
+新增功能需在真实机器人上核对左转状态、墙链编号及中途启动的任务范围；本轮没有连接硬件或下发实船动作。
+
+## v0.2.0 日志增强（2026-11-08）
+
+用户反馈原版实机联调与验收基本正常。本次在此基础上新增日志接收和展示；新增功能仍需用实际网关事件核对。
+
+- 接收 `hello.capabilities` 中的 `diagnostic_history` 和遥测中的 `diagnostics: {session, events}`；无需新增命令或修改 ROS 工作空间。
+- 按诊断会话和单调递增事件 ID 去重；自动重连保留游标、补读尚未收到的历史；网关重启后的新会话单独处理。最多记住 8 个诊断会话。
+- 网关只保留最近 50 条。断线期间被覆盖的事件会显示缺失数量，不能还原已经覆盖的内容。
+- 显示手动输入超时、App 断连、CTRL/ACK 超时、指令过期、串口调度异常及其他原始原因；显示输入年龄/阈值、CTRL/ACK 年龄、指令剩余时间、最大发送间隔、重连数、拒绝指令数和最近撤销原因。
+- 已知原因提供中文解释，并保留原始代码；未知原因与新增详情字段仍可查看。Nano 事件时间转换为平板时区并标识来源，不能直接用两台设备的时间差判断通信延迟。
+- App 记录遥测新鲜度变化、手动锁定原因、停止原因和发送定时器间隔异常；仅记录状态变化，不逐帧刷屏。这些诊断记录不参与控制许可判断。
+- 诊断页保留进程内最近 2000 条，按接收顺序最新在前；支持来源筛选、关键词搜索、点击记录展开原始参数、放大查看及回到最新。
+- “导出全部日志”通过系统文件保存界面写入 UTF-8 文本文件，导出点击时保留的全部记录，包含当前筛选隐藏的记录，不再受原 48,000 字符分享上限影响。清空只清除本地列表，不删除机器人日志，也不会重放已读历史。
+- 单条原因限 1000 字符，详情会限制字段数、嵌套深度与长度，并隐藏 token/password 字段。超大详情会标记截断；不导出地图、雷达和轨迹大数组。
+- 旧网关没有诊断历史时显示兼容提示，仍记录本地事件与桥状态变化。模拟模式提供明确标注的输入超时、ACK 超时历史示例。
+
+本版验证：`assembleDebug`、`testDebugUnitTest`、`lintDebug` 成功，31 项测试通过，Lint 0 错误 / 12 警告。新增 8 项日志数据测试、1 项诊断页交互测试，并在原流程测试中验证完整文本文件写入与取消导出。回放数据由该分支的真实 `DiagnosticHistory` 生成；17 组出站命令分别通过新旧两个网关的解码器。新增日志未进行本轮实船复测。
+
+安装包版本码由 1 升至 2，包名及调试签名与此前交付一致，可覆盖安装 v0.1.0。安装后打开“诊断”，可筛选“网关”或“串口桥”查看机器人事件。若看到“未声明诊断历史能力”，请确认实际启动的是上述新网关代码。
+
+本版测试渲染截图：`dist/screenshots-v0.2.0/tablet-diagnostics.png` 与 `tablet-diagnostics-compact.png`。本版仍使用调试签名。
+
+## v0.1.0 验证记录（2026-11-02）
 
 - `assembleDebug`、`testDebugUnitTest`、`lintDebug` 执行成功。
 - 22 项测试通过：18 项协议/坐标/状态门控测试，1 项实际本地 WebSocket 握手及收发测试，1 项 Android 生命周期测试，1 项模拟业务流程测试，1 项 Compose 触控测试。

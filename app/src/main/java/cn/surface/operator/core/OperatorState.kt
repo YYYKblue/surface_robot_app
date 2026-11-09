@@ -19,11 +19,20 @@ data class OperatorState(
     val manual: ManualIntent=ManualIntent(), val driving: Boolean=false,
     val foreground: Boolean=true, val picking: Boolean=false, val candidate: Pose?=null,
     val pending: Map<String,Pending> = emptyMap(), val catalog: List<JsonObject> = emptyList(),
-    val selectedMap: String="", val message: String="请连接机器人，或进入模拟模式", val logs: List<String> = emptyList()
+    val selectedMap: String="", val message: String="请连接机器人，或进入模拟模式", val logs: List<DiagnosticEntry> = emptyList(),
+    val exportingLogs:Boolean=false
 ) {
     val fresh get()=connected && receivedAt>=0 && now-receivedAt in 0..799
     val runtime get()=telemetry.obj("runtime")
     val task get()=telemetry.obj("tasks").obj(taskKind)
+    val openRoute get()=task.str("completion_scope") in setOf("remaining_open_route","remaining_l_route")
+    // Older controllers omit chain metadata. Never turn missing/invalid values into chain 1.
+    val routeChainLabel: String? get() {
+        if(taskKind!="l") return null
+        val index=task.long("route_chain_index",-1)
+        val count=task.long("route_chain_count",0)
+        return if(count>0 && index>=0 && index<count) "当前墙链：${index+1} / $count" else null
+    }
     val localization get()=telemetry.obj("localization")
     val operator get()=fresh && clientId.isNotEmpty() && telemetry.str("active_client").let { it.isEmpty() || it==clientId }
     val busy get()=telemetry.flag("task_busy") || telemetry.flag("operation_pending") || runtime.flag("busy")
@@ -118,5 +127,8 @@ val phaseLabels=mapOf("IDLE" to "待启动","ACQUIRING" to "获取控制权","AL
     "ACQUIRE_WALL" to "确认墙面","DOCK_WALL" to "靠墙对齐","FOLLOW" to "沿墙清洗",
     "CORRECT_HEADING" to "航向纠偏","WAIT_WALL" to "等待墙面观测","EDGE_STOP" to "当前边结束",
     "MOVE_INWARD" to "后退侧移","TURN_TO_NEXT_EDGE" to "转向下一面墙","APPROACH_NEXT_EDGE" to "靠近下一面墙",
+    "LEFT_EXIT_WALL" to "左转换边：前行走出当前墙端",
+    "LEFT_SHIFT_TO_ENTRY" to "左转换边：左移至下一墙入口",
+    "TURN_LEFT_TO_NEXT_EDGE" to "左转换边：左转对齐下一墙",
     "APPROACH_EDGE" to "接近清洗边","APPROACH_WALL" to "靠墙","COMPLETE" to "本次路线执行完成",
     "PAUSED" to "已暂停 · 取消后重新开始","STOPPED" to "任务已停止","CANCELLED" to "任务已取消")

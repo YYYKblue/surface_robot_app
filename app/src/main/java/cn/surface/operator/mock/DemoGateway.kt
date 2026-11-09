@@ -22,18 +22,33 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     private var manual=ManualIntent()
     private var owner=""
     private var lastOperation=EMPTY
+    private var boostPending=false
     private var saved=EMPTY
+    private val diagnosticSession="demo-${java.util.UUID.randomUUID()}"
+    private var diagnosticId=0L
+    private val diagnosticEvents=java.util.ArrayDeque<JsonObject>()
+    private fun record(source:String,reason:String,details:JsonObject=EMPTY) {
+        diagnosticEvents.addLast(packet("id" to ++diagnosticId,"time_unix" to System.currentTimeMillis()/1000.0,
+            "source" to source,"reason" to reason,"details" to JsonObject(details+packet("simulated" to true))))
+        while(diagnosticEvents.size>50) diagnosticEvents.removeFirst()
+    }
     private val catalog=mutableListOf(packet("name" to mapName,"valid" to true,"saved_at" to "模拟数据"),
-        packet("name" to "演示L池","valid" to true,"saved_at" to "模拟数据"),
+        packet("name" to "演示开放墙链","valid" to true,"saved_at" to "模拟数据"),
         packet("name" to "导出失败示例","valid" to false,"recoverable" to true,"reason" to "模拟栅格导出失败，可重试"))
-    private data class Run(var phase:String="IDLE",var id:String="",var begin:Int=0,val points:MutableList<Point> = mutableListOf())
+    private data class Run(var phase:String="IDLE",var id:String="",var begin:Int=0,var edge:Int=0,
+        var boost:Boolean=false,var cutoff:Boolean=false,val points:MutableList<Point> = mutableListOf())
+    // Synthetic UI playback, not a model of vessel dynamics or turn clearance.
+    private val demoEdges=mapOf("l" to DemoGeometry.edges("l"),"rectangle" to DemoGeometry.edges("rectangle"))
     private val runs=mapOf("rectangle" to Run(),"l" to Run())
     private val terminal=setOf("IDLE","PAUSED","STOPPED","CANCELLED","COMPLETE")
     private fun emit(p:JsonObject)=receive(p.toString())
     override fun connect() {
         live=true; status(true,"模拟连接")
         emit(packet("type" to "hello","protocol" to "f1-operator-v1","client_id" to "demo",
-            "capabilities" to JsonArray(listOf("task_selection","initial_pose","start_conditions","task_stop","task_tracks","mapping","map_catalog").map(::JsonPrimitive))))
+            "capabilities" to JsonArray(listOf("task_selection","initial_pose","start_conditions","task_stop","task_tracks","mapping","map_catalog","diagnostic_history","forward_boost").map(::JsonPrimitive))))
+        record("gateway","input_timeout",packet("input_age_ms" to 310,"input_timeout_ms" to 250,"had_lease" to true,"example" to "模拟历史示例，非当前故障"))
+        record("bridge","ACK progress timeout",packet("ctrl_age_sec" to .02,"ack_age_sec" to .35,"last_stop_reason" to "ACK progress timeout","example" to "模拟历史示例，非当前故障"))
+        record("bridge","模拟桥已就绪",packet("state" to "READY","source" to "NANO","motion_authorized" to false))
         emit(packet("type" to "map","map" to grid()))
         job=scope.launch { while(isActive && live) { tick++; advance(); emit(telemetry()); delay(100) } }
     }
@@ -41,7 +56,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
         "resolution" to 0.05,"origin" to packet("x" to 0,"y" to 0,"yaw" to 0),
         "data" to JsonArray(List(160*100) { i ->
             val cx=i%160; val cy=i/160
-            JsonPrimitive(if(cx<4 || cx>155 || cy<4 || cy>95) 100 else if(name.contains("L") && cx>100 && cy>55) 100 else 0)
+            JsonPrimitive(if(cx<4 || cx>155 || cy<4 || cy>95) 100 else if(name.contains("开放") && cx>100 && cy>75) 100 else 0)
         }))
     override fun send(value:JsonObject):Boolean {
         if(!live) return false
@@ -51,15 +66,37 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                 value.flag("brush_enabled"),value.long("brush_percent").toInt(),value.flag("thrust_enabled"),value.long("thrust_percent").toInt())
             owner="demo"; return true
         }
-        if(op=="manual_stop") { manual=manual.cleared(); return true }
+        if(op=="manual_stop") {
+            if(manual.active) record("gateway",value.str("reason"),packet("input_age_ms" to 20,"input_timeout_ms" to 250,"had_lease" to true))
+            manual=manual.cleared(); return true
+        }
         var extra=EMPTY; var success=true; var message="模拟操作完成"
         if(op=="task") {
             owner="demo"; manual=manual.cleared()
             val run=runs.getValue(value.str("task_type"))
+            if(action=="set_forward_boost") {
+                val allowed=mode=="localization" && !boostPending && runs.values.all {it.phase in terminal && it.phase!="PAUSED"}
+                if(!allowed) {
+                    emit(packet("type" to "reply","op" to "task","action" to action,"request_id" to value.str("request_id"),
+                        "success" to false,"message" to "模拟：运行中、暂停或操作待确认时不能设置提速"))
+                } else {
+                    boostPending=true
+                    scope.launch {
+                        delay(250)
+                        if(live) {
+                            run.boost=value.flag("enabled");boostPending=false
+                            emit(packet("type" to "reply","op" to "task","action" to action,"request_id" to value.str("request_id"),
+                                "success" to true,"message" to "模拟：主电机提速设置已确认"))
+                            emit(telemetry())
+                        }
+                    }
+                }
+                emit(telemetry());return true
+            }
             when(action) {
                 "start" -> {
-                    if(tick<readyAt || runs.values.any { it.phase !in terminal }) { success=false; message="定位未就绪或任务运行中" }
-                    else { run.phase="ACQUIRING"; run.id="demo-${tick}"; run.begin=tick; run.points.clear() }
+                    if(tick<readyAt || boostPending || runs.values.any { it.phase !in terminal || it.phase=="PAUSED" }) { success=false; message="定位未就绪、任务运行中或操作待确认" }
+                    else { run.phase="ACQUIRING"; run.id="demo-${tick}"; run.begin=tick; run.edge=0; run.cutoff=false; run.points.clear() }
                 }
                 "pause" -> run.phase="PAUSED"
                 "stop" -> run.phase="STOPPED"
@@ -76,7 +113,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                     owner="demo"; session++; revision++; readyAt=Int.MAX_VALUE; poseAt=0
                     mode=when(action) { "load"->"localization"; "start"->"mapping"; else->"idle" }
                     if(action=="load") mapName=value.str("name")
-                    runs.values.forEach { it.phase="IDLE"; it.id=""; it.points.clear() }
+                    runs.values.forEach { it.phase="IDLE"; it.id=""; it.edge=0; it.boost=false; it.cutoff=false; it.points.clear() }
                     emit(telemetry())
                     emit(packet("type" to "map","map" to if(mode=="idle") JsonNull else grid()))
                 }
@@ -103,12 +140,38 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                 val elapsed=tick-r.begin
                 r.phase=when { elapsed<10->"ACQUIRING"; elapsed<25->"ALIGN_START"; elapsed<40->"MOVE_START_SIDE"; elapsed<180->"FOLLOW"; else->"COMPLETE" }
                 if(elapsed>=40) {
+                    val oldEdge=r.edge
                     val t=((elapsed-40)/140.0).coerceIn(0.0,1.0)
-                    if(kind=="l") { x=1.0+5.0*min(1.0,t*2); y=1.0+2.5*max(0.0,t*2-1); yaw=if(t<.5) 0.0 else PI/2 }
-                    else { val u=t*4; when(u.toInt().coerceAtMost(3)) {
-                        0->{x=1+6*u;y=1.0;yaw=0.0}; 1->{x=7.0;y=1+3*(u-1);yaw=PI/2}
-                        2->{x=7-6*(u-2);y=4.0;yaw=PI};else->{x=1.0;y=4-3*(u-3);yaw=-PI/2}
-                    } }
+                    if(kind=="l") {
+                        val progress=(elapsed-40).coerceAtMost(140)
+                        r.edge=(progress/30).coerceAtMost(4)
+                        val step=progress-r.edge*30
+                        val edge=demoEdges.getValue(kind)[r.edge]
+                        val a=edge.start;val b=edge.stop
+                        val fraction=(step/20.0).coerceIn(0.0,1.0)
+                        x=a.x+(b.x-a.x)*fraction;y=a.y+(b.y-a.y)*fraction;yaw=atan2(b.y-a.y,b.x-a.x)
+                        if(elapsed<180 && step>=20 && r.edge<4) {
+                            val nextYaw=demoEdges.getValue(kind)[r.edge+1].yaw
+                            val delta=atan2(sin(nextYaw-yaw),cos(nextYaw-yaw))
+                            val left=delta>0
+                            r.phase=when {
+                                step<22->"EDGE_STOP"
+                                step<24->if(left) "LEFT_EXIT_WALL" else "MOVE_INWARD"
+                                step<26->if(left) "LEFT_SHIFT_TO_ENTRY" else "MOVE_INWARD"
+                                step<28->if(left) "TURN_LEFT_TO_NEXT_EDGE" else "TURN_TO_NEXT_EDGE"
+                                else->"APPROACH_NEXT_EDGE"
+                            }
+                            if(step>=26) yaw+=delta*((step-26)/4.0)
+                        }
+                    }
+                    else {
+                        val u=t*4;r.edge=u.toInt().coerceAtMost(3)
+                        val edge=demoEdges.getValue(kind)[r.edge];val fraction=u-r.edge
+                        x=edge.start.x+(edge.stop.x-edge.start.x)*fraction
+                        y=edge.start.y+(edge.stop.y-edge.start.y)*fraction;yaw=edge.yaw
+                    }
+                    if(oldEdge!=r.edge) r.cutoff=false
+                    if(demoEdges.getValue(kind)[r.edge].remaining(Point(x,y))<=.8) r.cutoff=true
                     if(tick%2==0) r.points.add(Point(x,y))
                 }
             }
@@ -124,22 +187,46 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
         val mapId="demo/$mapName"
         val tasks=buildJsonObject {
             runs.forEach { (kind,r) ->
-                val path=if(kind=="l") listOf(Point(1.0,1.0),Point(6.0,1.0),Point(6.0,3.5)) else listOf(Point(1.0,1.0),Point(7.0,1.0),Point(7.0,4.0),Point(1.0,4.0),Point(1.0,1.0))
+                val boostEditable=r.phase in setOf("IDLE","CANCELLED","STOPPED","COMPLETE")
+                val boostActive=r.boost && r.phase=="FOLLOW" && !r.cutoff
+                val boostError=when {
+                    mode!="localization"->"请先加载地图"
+                    active.isNotEmpty() || !boostEditable || runs.values.any {it.phase=="PAUSED"}->"只能在任务开始前设置提速；暂停后请先取消任务"
+                    else->""
+                }
+                val edges=demoEdges.getValue(kind)
+                val start=edges.first().start
+                val reference=edges.first().let {Point(it.wallStart.x+it.tx*.2,it.wallStart.y+it.ty*.2)}
                 put(kind,packet("task_type" to kind,"fresh" to (mode=="localization"),"map_id" to mapId,"run_id" to r.id,
-                    "phase" to r.phase,"can_start" to (ready && active.isEmpty() && r.phase!="PAUSED"),"output_enabled" to false,
+                    "phase" to r.phase,"can_start" to (ready && !boostPending && active.isEmpty() && runs.values.none {it.phase=="PAUSED"}),"output_enabled" to false,
+                    "forward_boost_enabled" to r.boost,"forward_boost_active" to boostActive,"forward_boost_editable" to boostEditable,
+                    "can_set_forward_boost" to (boostError.isEmpty() && !boostPending),"forward_boost_setting_error" to boostError,
+                    "forward_boost_cutoff_m" to .8,"forward_boost_cutoff_reached" to r.cutoff,
+                    "forward_boost_reason" to when { !r.boost->"disabled";boostActive->"active";r.phase in terminal->"inactive_task";r.cutoff->"endpoint_cutoff";else->"waiting_follow" },
                     "start_blockers" to JsonArray(if(ready) emptyList() else listOf(packet("code" to "localization","message" to "请设置初始位姿并等待定位稳定"))),
-                    "start_edge_id" to "AB","current_edge_id" to "AB","wall_fresh" to ready,"wall_valid" to ready,"center_wall_distance_m" to .62,
-                    "completion_scope" to if(kind=="l") "remaining_l_route" else "rectangle_route","coverage_complete" to false,
-                    "remaining_contact_intervals" to JsonArray(listOf(packet("edge_id" to "AB","start" to 0,"end" to .2))),
+                    "start_edge_id" to "edge_0","current_edge_id" to "edge_${r.edge}","wall_fresh" to ready,"wall_valid" to ready,"center_wall_distance_m" to DemoGeometry.WALL_TARGET,
+                    "wall_target_m" to DemoGeometry.WALL_TARGET,"wall_band_min_m" to DemoGeometry.WALL_MIN,"wall_band_max_m" to DemoGeometry.WALL_MAX,
+                    "front_stop_m" to DemoGeometry.FRONT_STOP,"map_front_clearance_m" to edges[r.edge].remaining(Point(x,y)),
+                    "route_chain_index" to if(kind=="l") 0 else null,"route_chain_count" to if(kind=="l") 2 else null,
+                    "edge_count" to edges.size,"reason" to "模拟状态回放，不代表真实换边运动或空间可行性",
+                    "completion_scope" to if(kind=="l") "remaining_open_route" else "rectangle_route","coverage_complete" to false,
+                    "remaining_contact_intervals" to JsonArray(listOf(packet("edge_id" to "edge_0","start" to 0,"end" to .2))),
                     "completed_at_ns" to if(r.phase=="COMPLETE") System.currentTimeMillis()*1_000_000 else 0,
-                    "expected_track" to packet("frame_id" to "map","map_id" to mapId,"cleaning_segments" to JsonArray(path.zipWithNext().map { (a,b)->packet("points" to points(listOf(a,b))) }),
-                        "start_region" to packet("polygon" to points(listOf(Point(.5,.5),Point(1.5,.5),Point(1.5,1.5),Point(.5,1.5))),"reference_wall_point" to JsonArray(listOf(JsonPrimitive(1),JsonPrimitive(.2))))),
+                    "expected_track" to packet("frame_id" to "map","map_id" to mapId,
+                        "basis" to "boat_center_stop","wall_target_m" to DemoGeometry.WALL_TARGET,
+                        "wall_band_min_m" to DemoGeometry.WALL_MIN,"wall_band_max_m" to DemoGeometry.WALL_MAX,"front_stop_m" to DemoGeometry.FRONT_STOP,
+                        "cleaning_segments" to JsonArray(edges.mapIndexed { i,e->packet("edge_id" to "edge_$i","points" to points(listOf(e.start,e.stop))) }),
+                        "navigation_path" to JsonArray(emptyList()),
+                        "start_region" to packet("polygon" to points(listOf(Point(start.x-.1,start.y-.1),Point(start.x+.1,start.y-.1),Point(start.x+.1,start.y+.1),Point(start.x-.1,start.y+.1))),
+                            "reference_wall_point" to JsonArray(listOf(JsonPrimitive(reference.x),JsonPrimitive(reference.y))))),
                     "actual_track" to packet("frame_id" to "map","map_id" to mapId,"run_id" to r.id,"segments" to JsonArray(listOf(points(r.points))),"point_count" to r.points.size,"truncated" to false)))
             }
         }
-        return packet("type" to "telemetry","active_client" to owner.ifEmpty { null },"task_busy" to active.isNotEmpty(),"operation_pending" to false,
+        return packet("type" to "telemetry","active_client" to owner.ifEmpty { null },"task_busy" to (active.isNotEmpty() || runs.values.any {it.phase=="PAUSED"}),"operation_pending" to boostPending,
+            "diagnostics" to packet("session" to diagnosticSession,"events" to JsonArray(diagnosticEvents.toList())),
             "active_tasks" to JsonArray(active.map(::JsonPrimitive)),"can_set_initial_pose" to (mode=="localization" && active.isEmpty()),"tasks" to tasks,
-            "state" to packet("connected" to true,"state" to "READY","source" to "NANO","armed" to true,"motion_authorized" to false,"allow_fifth_thruster" to true,"ack_age_sec" to .02,"ctrl_age_sec" to .02,"reason" to "模拟，不驱动硬件"),"control_fresh" to true,
+            "state" to packet("connected" to true,"state" to "READY","source" to "NANO","armed" to true,"motion_authorized" to false,"allow_fifth_thruster" to true,"ack_age_sec" to .02,"ctrl_age_sec" to .02,"reason" to "模拟，不驱动硬件",
+                "last_stop_reason" to "","command_remaining_sec" to .15,"max_tx_gap_sec" to .052,"reconnects" to 0,"rejected_commands" to 0,"owner" to "demo"),"control_fresh" to true,
             "pose" to if(mode=="idle") JsonNull else packet("x" to x,"y" to y,"yaw" to yaw),
             "scan" to if(mode=="idle") JsonNull else packet("frame_id" to "map","points" to points(List(80){i->Point(.25+i*.095,.25+.02*sin(i.toDouble()))})),
             "localization" to packet("fresh" to (mode=="localization"),"map_id" to mapId,"ready" to ready,"initial_pose_received" to (poseAt>0),"initial_pose_stamp_ns" to poseAt,"stable_elapsed_sec" to if(ready) 1 else 0,"stable_sec" to 1,"scan_fresh" to true,"pose_fresh" to true),

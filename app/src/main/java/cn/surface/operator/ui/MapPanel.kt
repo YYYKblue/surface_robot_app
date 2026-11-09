@@ -10,11 +10,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.*
 import cn.surface.operator.core.*
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +33,8 @@ fun MapPanel(state:OperatorState,onPose:(Pose?)->Unit,modifier:Modifier=Modifier
     var pixels by remember { mutableStateOf(IntSize(1,1)) }
     var showScan by remember { mutableStateOf(true) }
     var showTrack by remember { mutableStateOf(true) }
+    val centerTrack=if(preview==null && showTrack) state.centerTrackOverlay(grid) else null
+    val markerPaint=remember {android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {color=0xFFB45B16.toInt()}}
     val image by produceState<ImageBitmap?>(null,grid) {
         value=null
         value=withContext(Dispatchers.Default) { grid?.let { g ->
@@ -67,10 +72,12 @@ fun MapPanel(state:OperatorState,onPose:(Pose?)->Unit,modifier:Modifier=Modifier
             TextButton(onClick={zoom=(zoom/1.4f).coerceAtLeast(.5f)}) { Text("−") }
             TextButton(onClick={zoom=(zoom*1.4f).coerceAtMost(10f)}) { Text("＋") }
         }
-        Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFFF0F4F6))) {
+        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().background(Color(0xFFF0F4F6))) {
             var start by remember { mutableStateOf<Offset?>(null) }
             var end by remember { mutableStateOf<Offset?>(null) }
-            Canvas(Modifier.fillMaxSize().onSizeChanged {pixels=it}.pointerInput(picking,grid) {
+            Canvas(Modifier.fillMaxSize().semantics {
+                centerTrack?.let {contentDescription="船中心停车点：${it.stops.size} 个，距墙端 ${centimeters(it.stop)} cm"}
+            }.onSizeChanged {pixels=it}.pointerInput(picking,grid) {
                 if(picking) detectDragGestures(
                     onDragStart={start=it;end=it;currentPoseCallback(null)},
                     onDragCancel={start=null;end=null;currentPoseCallback(null)},
@@ -90,7 +97,10 @@ fun MapPanel(state:OperatorState,onPose:(Pose?)->Unit,modifier:Modifier=Modifier
                     zoom=newZoom
                 }
             }) {
-                val tr=transform;val bitmap=image
+                // Draw against this frame's canvas bounds. onSizeChanged state can
+                // lag a layout frame when the parameter legend first appears.
+                val tr=grid?.let {MapTransform(it,size.width.toDouble(),size.height.toDouble(),zoom.toDouble(),Point(pan.x.toDouble(),pan.y.toDouble()))}
+                val bitmap=image
                 if(tr!=null && bitmap!=null) {
                     drawImage(bitmap,dstOffset=IntOffset(tr.left.roundToInt(),(tr.bottom-grid.height*grid.resolution*tr.scale).roundToInt()),
                         dstSize=IntSize((grid.width*grid.resolution*tr.scale).roundToInt().coerceAtLeast(1),(grid.height*grid.resolution*tr.scale).roundToInt().coerceAtLeast(1)),filterQuality=FilterQuality.None)
@@ -120,6 +130,22 @@ fun MapPanel(state:OperatorState,onPose:(Pose?)->Unit,modifier:Modifier=Modifier
                             val polygon=region.arr("polygon").mapNotNull {it.point()}
                             if(polygon.size==4) line(polygon+polygon.first(),Color(0xFF9252B5),true)
                             region["reference_wall_point"]?.point()?.let { drawCircle(Color(0xFF9252B5),5.dp.toPx(),screen(it)) }
+                            centerTrack?.let { overlay ->
+                                markerPaint.textSize=11.sp.toPx()
+                                val label="${centimeters(overlay.stop)} cm"
+                                val half=4.dp.toPx()
+                                overlay.stops.forEach { point ->
+                                    val p=screen(point)
+                                    if(p.x !in 0f..size.width || p.y !in 0f..size.height) return@forEach
+                                    val topLeft=p-Offset(half,half)
+                                    val boxSize=androidx.compose.ui.geometry.Size(half*2,half*2)
+                                    drawRect(Color(0xFFFFF3DF),topLeft,boxSize)
+                                    drawRect(Color(0xFFB45B16),topLeft,boxSize,style=Stroke(2.dp.toPx()))
+                                    val tx=(p.x+7.dp.toPx()).coerceIn(0f,(size.width-markerPaint.measureText(label)).coerceAtLeast(0f))
+                                    val ty=(p.y-7.dp.toPx()).coerceIn(markerPaint.textSize,size.height.coerceAtLeast(markerPaint.textSize))
+                                    drawContext.canvas.nativeCanvas.drawText(label,tx,ty,markerPaint)
+                                }
+                            }
                         }
                         if(showTrack && state.matchingTaskMap && actual.str("frame_id")==grid.frame && actual.str("map_id")==task.str("map_id") && actual.str("run_id")==task.str("run_id"))
                             actual.arr("segments").forEach { e -> (e as? JsonArray)?.polylines()?.forEach {line(it,Teal)} }
@@ -141,6 +167,14 @@ fun MapPanel(state:OperatorState,onPose:(Pose?)->Unit,modifier:Modifier=Modifier
             }
             if(preview==null && grid!=null && !state.fresh) Text("遥测已过期 · 仅显示地图与历史轨迹",Modifier.align(Alignment.BottomCenter).background(Color(0xFFEADCC6)).padding(8.dp))
         }
-        Text(if(preview!=null) "独立预览 · 不叠加当前机器人位置" else "蓝虚线：清洗目标  ·  紫框：起始范围  ·  绿线：历史轨迹",Modifier.padding(12.dp),style=MaterialTheme.typography.labelMedium,color=Muted)
+        Column(Modifier.padding(12.dp)) {
+            Text(if(preview!=null) "独立预览 · 不叠加当前机器人位置" else if(centerTrack!=null)
+                "蓝虚线：船中心目标 · 橙框：停车点 · 紫框：起始范围 · 绿线：历史轨迹"
+                else "蓝虚线：清洗目标 · 紫框：起始范围 · 绿线：历史轨迹",style=MaterialTheme.typography.labelMedium,color=Muted)
+            centerTrack?.let {
+                Text(it.legend,style=MaterialTheme.typography.labelMedium,color=Muted)
+                Text("橙框为各墙段常规停车点；矩形补洗可能提前结束。目标线不代表换边或避障路径。",style=MaterialTheme.typography.labelSmall,color=Muted)
+            }
+        }
     }
 }

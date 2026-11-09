@@ -34,15 +34,26 @@ class DemoWorkflowTest {
             vm.candidate(Pose(1.0,1.0,0.0,vm.state.value.map!!.revision))
             vm.publishPose()
             until("localization ready") {vm.state.value.canStart}
+            assertEquals(false,vm.state.value.forwardBoostEnabled)
+            vm.setForwardBoost(true)
+            assertFalse(vm.state.value.canStart)
+            assertEquals(false,vm.state.value.forwardBoostEnabled)
+            until("rectangle boost confirmed") {vm.state.value.canSetForwardBoost && vm.state.value.forwardBoostEnabled==true}
             vm.task("start")
             until("rectangle running") {vm.state.value.busy && vm.state.value.pending.isEmpty()}
             assertFalse(vm.state.value.canStart)
+            assertFalse(vm.state.value.canSetForwardBoost)
             vm.task("pause")
             until("paused") {vm.state.value.fresh && vm.state.value.task.str("phase")=="PAUSED"}
             assertFalse(vm.state.value.canStart)
+            assertFalse(vm.state.value.canSetForwardBoost)
             vm.task("cancel")
             until("cancelled") {vm.state.value.canSelectTask}
-            vm.taskKind("l");vm.task("start")
+            vm.taskKind("l")
+            assertEquals(false,vm.state.value.forwardBoostEnabled)
+            vm.setForwardBoost(true)
+            until("open boost confirmed") {vm.state.value.canSetForwardBoost && vm.state.value.forwardBoostEnabled==true}
+            vm.task("start")
             until("L running") {vm.state.value.busy && vm.state.value.pending.isEmpty()}
             vm.task("stop")
             until("L stopped") {vm.state.value.fresh && vm.state.value.task.str("phase")=="STOPPED"}
@@ -55,15 +66,29 @@ class DemoWorkflowTest {
             assertNull(vm.state.value.map)
             vm.page(Page.MAPS)
             until("catalog") {vm.state.value.pending.isEmpty() && vm.state.value.catalog.size>=5}
-            vm.selectMap("演示L池");vm.mapping("preview")
+            vm.selectMap("演示开放墙链");vm.mapping("preview")
             until("preview") {vm.state.value.preview!=null}
             assertEquals(100,vm.state.value.preview!!.cells[80*160+130].toInt())
             vm.closePreview();vm.mapping("load")
-            until("loaded map") {vm.state.value.canPose && vm.state.value.runtime.str("current_map")=="演示L池"}
+            until("loaded map") {vm.state.value.canPose && vm.state.value.runtime.str("current_map")=="演示开放墙链"}
             assertFalse(vm.state.value.canStart)
+            assertEquals(false,vm.state.value.forwardBoostEnabled)
+            assertFalse(vm.state.value.telemetry.obj("tasks").obj("rectangle").flag("forward_boost_enabled"))
             vm.selectMap("导出失败示例");vm.mapping("retry_export")
             until("recovered") {vm.state.value.selectedEntry.flag("valid") && vm.state.value.pending.isEmpty()}
             assertTrue(vm.state.value.demo)
+            val exported=java.io.File(controller.get().cacheDir,"diagnostic-export-test.txt")
+            assertTrue(vm.beginLogExport())
+            assertFalse(vm.beginLogExport())
+            vm.clearLogs() // Export uses the click-time snapshot even if the visible list changes.
+            vm.page(Page.TASK)
+            vm.finishLogExport(android.net.Uri.fromFile(exported))
+            until("file exported") {!vm.state.value.exportingLogs}
+            val text=exported.readText(Charsets.UTF_8)
+            assertTrue(text.startsWith("\uFEFFSurfaceOperator"))
+            assertTrue(text.contains("input_timeout"));assertTrue(text.contains("ACK progress timeout"))
+            assertTrue(vm.beginLogExport());vm.finishLogExport(null)
+            assertFalse(vm.state.value.exportingLogs)
         } finally {vm.disconnect();controller.pause().stop().destroy()}
     }
 }

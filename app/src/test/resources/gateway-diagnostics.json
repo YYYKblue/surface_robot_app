@@ -1,0 +1,608 @@
+[
+  {
+    "type": "telemetry",
+    "control_fresh": true,
+    "diagnostics": {
+      "session": "fixture-gateway-1",
+      "events": [
+        {
+          "id": 1,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "input_timeout",
+          "details": {
+            "input_age_ms": 310.0,
+            "input_timeout_ms": 250.0,
+            "had_lease": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "telemetry",
+    "control_fresh": true,
+    "diagnostics": {
+      "session": "fixture-gateway-1",
+      "events": [
+        {
+          "id": 1,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "input_timeout",
+          "details": {
+            "input_age_ms": 310.0,
+            "input_timeout_ms": 250.0,
+            "had_lease": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "telemetry",
+    "control_fresh": true,
+    "diagnostics": {
+      "session": "fixture-gateway-1",
+      "events": [
+        {
+          "id": 1,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "input_timeout",
+          "details": {
+            "input_age_ms": 310.0,
+            "input_timeout_ms": 250.0,
+            "had_lease": true
+          }
+        },
+        {
+          "id": 2,
+          "time_unix": 1794096000.125,
+          "source": "bridge",
+          "reason": "ACK progress timeout",
+          "details": {
+            "state": "FAULT",
+            "source": "NANO",
+            "owner": "",
+            "motion_authorized": false,
+            "last_stop_reason": "ACK progress timeout",
+            "ctrl_age_sec": 0.02,
+            "ack_age_sec": 0.35,
+            "command_remaining_sec": 0,
+            "reconnects": 1,
+            "max_tx_gap_sec": 0.21,
+            "rejected_commands": 3
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "telemetry",
+    "control_fresh": true,
+    "diagnostics": {
+      "session": "fixture-gateway-1",
+      "events": [
+        {
+          "id": 8,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 5,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 9,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 6,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 10,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 7,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 11,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 8,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 12,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 9,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 13,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 10,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 14,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 11,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 15,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 12,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 16,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 13,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 17,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 14,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 18,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 15,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 19,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 16,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 20,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 17,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 21,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 18,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 22,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 19,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 23,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 20,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 24,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 21,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 25,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 22,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 26,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 23,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 27,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 24,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 28,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 25,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 29,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 26,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 30,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 27,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 31,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 28,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 32,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 29,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 33,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 30,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 34,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 31,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 35,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 32,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 36,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 33,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 37,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 34,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 38,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 35,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 39,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 36,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 40,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 37,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 41,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 38,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 42,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 39,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 43,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 40,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 44,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 41,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 45,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 42,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 46,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 43,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 47,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 44,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 48,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 45,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 49,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 46,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 50,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 47,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 51,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 48,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 52,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 49,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 53,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 50,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 54,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 51,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 55,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 52,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 56,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 53,
+            "input_timeout_ms": 250
+          }
+        },
+        {
+          "id": 57,
+          "time_unix": 1794096000.125,
+          "source": "gateway",
+          "reason": "app_disconnected",
+          "details": {
+            "input_age_ms": 54,
+            "input_timeout_ms": 250
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "telemetry",
+    "control_fresh": true,
+    "diagnostics": {
+      "session": "fixture-gateway-2",
+      "events": [
+        {
+          "id": 1,
+          "time_unix": 1794096000.125,
+          "source": "bridge",
+          "reason": "CTRL timeout",
+          "details": {
+            "ctrl_age_sec": 0.5
+          }
+        }
+      ]
+    }
+  }
+]

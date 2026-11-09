@@ -43,22 +43,42 @@ class AppSmokeTest {
             val view=activity.window.decorView
             fun capture(name:String,width:Int=2560,height:Int=1600) {
                 val bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888)
-                view.measure(android.view.View.MeasureSpec.makeMeasureSpec(width,android.view.View.MeasureSpec.EXACTLY),android.view.View.MeasureSpec.makeMeasureSpec(height,android.view.View.MeasureSpec.EXACTLY))
-                view.layout(0,0,width,height)
-                // A responsive layout switch creates a new MapPanel bitmap producer.
-                repeat(4) {Thread.sleep(30);shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(30))}
+                // Settle both bitmap production and onSizeChanged recomposition after
+                // telemetry adds the geometry legend or a responsive layout changes.
+                repeat(4) {
+                    view.measure(android.view.View.MeasureSpec.makeMeasureSpec(width,android.view.View.MeasureSpec.EXACTLY),android.view.View.MeasureSpec.makeMeasureSpec(height,android.view.View.MeasureSpec.EXACTLY))
+                    view.layout(0,0,width,height)
+                    Thread.sleep(30);shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(30))
+                }
                 view.measure(android.view.View.MeasureSpec.makeMeasureSpec(width,android.view.View.MeasureSpec.EXACTLY),android.view.View.MeasureSpec.makeMeasureSpec(height,android.view.View.MeasureSpec.EXACTLY))
                 view.layout(0,0,width,height);view.draw(Canvas(bitmap))
                 val output=File("build/reports/screenshots/$name.png");output.parentFile?.mkdirs()
                 output.outputStream().use {bitmap.compress(Bitmap.CompressFormat.PNG,100,it)}
             }
             capture("tablet-landscape")
+            vm.taskKind("l")
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            capture("tablet-open-route")
+            capture("tablet-open-route-compact",1600,2560)
+            vm.setForwardBoost(true)
+            repeat(12) {Thread.sleep(25);shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(50))}
+            assertEquals(true,vm.state.value.forwardBoostEnabled)
+            assertTrue(vm.state.value.pending.isEmpty())
+            capture("tablet-forward-boost")
+            capture("tablet-forward-boost-compact",1600,2560)
+            vm.taskKind("rectangle")
             vm.page(Page.MANUAL);vm.armManual()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
             capture("tablet-manual")
             vm.page(Page.TASK)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
             capture("tablet-portrait",1600,2560)
+            vm.page(Page.DIAGNOSTICS)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            assertTrue(vm.state.value.logs.any {it.reason=="input_timeout"})
+            assertTrue(vm.state.value.logs.any {it.reason=="ACK progress timeout"})
+            capture("tablet-diagnostics")
+            capture("tablet-diagnostics-compact",1600,2560)
         } finally {vm.disconnect();controller.pause().stop().destroy()}
     }
 }

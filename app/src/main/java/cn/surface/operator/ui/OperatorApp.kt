@@ -1,6 +1,5 @@
 package cn.surface.operator.ui
 
-import android.content.Intent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -14,7 +13,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -22,6 +20,7 @@ import androidx.compose.ui.unit.*
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cn.surface.operator.BuildConfig
 import cn.surface.operator.OperatorViewModel
 import cn.surface.operator.core.*
 import kotlinx.serialization.json.*
@@ -46,13 +45,15 @@ private val Background=Color(0xFFF1F5F7)
                         if(s.page in setOf(Page.TASK,Page.MANUAL,Page.MAPPING)) {
                             MapPanel(s,vm::candidate,Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(18.dp)))
                             Panel(Modifier.width(controlWidth).fillMaxHeight()) { PageContent(s,vm) }
-                        } else Panel(Modifier.weight(1f).fillMaxHeight()) { PageContent(s,vm) }
+                        } else if(s.page==Page.DIAGNOSTICS) DiagnosticsPanel(s,vm,Modifier.weight(1f).fillMaxHeight())
+                        else Panel(Modifier.weight(1f).fillMaxHeight()) { PageContent(s,vm) }
                     } else Column(Modifier.fillMaxSize()) {
                         Navigation(s,vm,false)
                         if(s.page in setOf(Page.TASK,Page.MANUAL,Page.MAPPING)) {
                             MapPanel(s,vm::candidate,Modifier.fillMaxWidth().weight(1f).heightIn(min=180.dp))
                             Panel(Modifier.fillMaxWidth().weight(1.1f)) { PageContent(s,vm) }
-                        } else Panel(Modifier.fillMaxSize()) { PageContent(s,vm) }
+                        } else if(s.page==Page.DIAGNOSTICS) DiagnosticsPanel(s,vm,Modifier.fillMaxSize())
+                        else Panel(Modifier.fillMaxSize()) { PageContent(s,vm) }
                     }
                 }
                 Footer(s)
@@ -106,7 +107,7 @@ private val Background=Color(0xFFF1F5F7)
         Page.MANUAL->ManualPage(s,vm)
         Page.MAPPING->MappingPage(s,vm)
         Page.MAPS->MapsPage(s,vm)
-        Page.DIAGNOSTICS->Diagnostics(s,vm)
+        Page.DIAGNOSTICS->Unit // Dedicated bounded LazyColumn outside the scrolling Panel.
         Page.SETTINGS->Settings(s,vm)
     }
 }
@@ -123,14 +124,22 @@ private val Background=Color(0xFFF1F5F7)
     Button(onClick,enabled=enabled,modifier=Modifier.fillMaxWidth().heightIn(min=52.dp),shape=RoundedCornerShape(12.dp),
         colors=ButtonDefaults.buttonColors(containerColor=if(danger) Danger else Teal)) {Text(label)}
 }
-@Composable private fun TaskPage(s:OperatorState,vm:OperatorViewModel) {
+@Composable internal fun TaskPage(s:OperatorState,vm:OperatorViewModel) {
     Title("清洗作业","先定位，再检查启动条件")
     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-        listOf("rectangle" to "矩形清洗","l" to "L 清洗").forEach { (kind,label)->
+        listOf("rectangle" to "矩形清洗","l" to "开放多边清洗").forEach { (kind,label)->
             FilterChip(s.taskKind==kind,{vm.taskKind(kind)},label={Text(label)},enabled=s.canSelectTask)
         }
     }
     val loc=s.localization;val task=s.task
+    ForwardBoostPanel(s,vm::setForwardBoost)
+    if(s.taskKind=="l") {
+        Info("仅执行起始位置之后的墙段，到墙链末端停止；清洗全链请从首边入口附近开始。")
+        s.routeChainLabel?.let { label ->
+            Text((if(s.fresh && task.flag("fresh")) "" else "上次记录 · ")+label,color=Muted)
+            Text("独立墙链之间不自动转场；切换墙链需在机器人端配置并重启。",style=MaterialTheme.typography.bodySmall,color=Muted)
+        }
+    }
     val locText=when {
         !s.fresh || !loc.flag("fresh")->"定位状态未知或过期"
         !loc.flag("initial_pose_received")->"尚未设置初始位姿"
@@ -166,9 +175,10 @@ private val Background=Color(0xFFF1F5F7)
     if(task.str("run_id").isNotBlank()) Text("任务 ${task.str("run_id")}\n起始墙 ${task.str("start_edge_id","—")} · 当前墙 ${task.str("current_edge_id","—")}",color=Muted)
     if(task.str("reason").isNotBlank()) Text(task.str("reason"),color=Muted)
     if(task.flag("returning_to_start")) Info("正在补齐起始边前段")
-    if(task.str("completion_scope")=="remaining_l_route") Text("本次仅执行剩余 L 路线，到终点停止；不返回、不补洗。",style=MaterialTheme.typography.bodySmall)
+    if(s.openRoute) Text("本次仅执行剩余开放墙链，到终点停止；不返回、不补洗。",style=MaterialTheme.typography.bodySmall)
     if(task.str("phase")=="COMPLETE") {
-        Info((if(s.fresh && task.flag("fresh")) "本次路线执行完成" else "历史结果：本次路线执行完成")+"\n"+if(task.flag("coverage_complete")) "覆盖记录完整" else "覆盖记录仍有缺口",!task.flag("coverage_complete"))
+        val result=if(s.openRoute) "本次剩余开放墙链执行完成" else "本次路线执行完成"
+        Info((if(s.fresh && task.flag("fresh")) result else "历史结果：$result")+"\n"+if(task.flag("coverage_complete")) "本次要求区间覆盖记录完整" else "覆盖记录仍有缺口",!task.flag("coverage_complete"))
         if(task.long("completed_at_ns")>0) Text("完成时间："+java.time.Instant.ofEpochSecond(task.long("completed_at_ns")/1_000_000_000).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString(),style=MaterialTheme.typography.bodySmall)
         Text("剩余接触区间：${task["remaining_contact_intervals"] ?: "未提供"}",style=MaterialTheme.typography.bodySmall)
     }
@@ -269,30 +279,7 @@ private val Background=Color(0xFFF1F5F7)
     OutlinedButton({vm.connect(url,true)},modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("进入模拟模式 · 不连接硬件")}
     OutlinedButton(vm::disconnect,modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("断开连接 / 释放操作端")}
     Info("连接后先观察状态。手动页明确启用驾驶后才发送运动意图。\n断线不会主动取消已经启动的自动任务；退出不会结束机器人端建图。")
-    Text("当前版本 0.1.0 · f1-operator-v1\n主要适配 11.5 英寸横屏，同时支持竖屏与分屏。\n当前版本面向可信局域网现有 ws:// 网关。",color=Muted)
-}
-@Composable private fun Diagnostics(s:OperatorState,vm:OperatorViewModel) {
-    val context=LocalContext.current
-    var confirm by remember {mutableStateOf(false)}
-    Title("连接与运行诊断","数据来自网关，不以请求发送成功代替执行结果")
-    val control=s.telemetry.obj("state")
-    Info("连接：${s.connection}\n遥测：${if(s.fresh) "新鲜" else "已过期"}\n控制端：${s.telemetry.str("active_client","未占用")}\n硬件状态：${control.str("state","未知")}\n控制源：${control.str("source","未知")}\n硬件数据：${if(s.fresh && s.telemetry.flag("control_fresh")) "新鲜" else "未知或过期"}\n输出许可：${control.flag("motion_authorized")}\nCTRL / ACK 年龄：${control.num("ctrl_age_sec")} / ${control.num("ack_age_sec")} 秒\n${control.str("reason")}")
-    if(s.pending.isNotEmpty()) {
-        Info("待确认操作：\n"+s.pending.values.joinToString("\n") {"${it.command.str("op")} / ${it.action} · ${(s.now-it.sentAt)/1000}s"},true)
-        OutlinedButton({confirm=true},enabled=s.fresh && !s.busy && s.pending.values.all {s.now-it.sentAt>5000}) {Text("已核对机器人状态，清除本地待确认")}
-    }
-    OutlinedButton({
-        vm.stopManual("export_log")
-        val raw="SurfaceOperator 0.1.0\n模式：${if(s.demo) "模拟" else "真实连接"}\n${s.logs.joinToString("\n")}\n最新遥测（可能已过期）：\n${s.telemetry}"
-        // Keep the chooser Intent well below Android's Binder transaction limit.
-        val report=raw.take(48000)+if(raw.length>48000) "\n[大体积遥测已截断]" else ""
-        try {
-            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {type="text/plain";putExtra(Intent.EXTRA_SUBJECT,"机器人诊断日志");putExtra(Intent.EXTRA_TEXT,report)},"导出诊断日志"))
-        } catch(_:android.content.ActivityNotFoundException) {vm.notice("未找到可接收文本日志的应用")}
-    }){Text("导出诊断日志")}
-    Text("已协商能力：${s.capabilities.joinToString()}",style=MaterialTheme.typography.bodySmall,color=Muted)
-    HorizontalDivider();s.logs.take(40).forEach {Text(it,style=MaterialTheme.typography.bodySmall,color=Ink)}
-    if(confirm) AlertDialog(onDismissRequest={confirm=false},title={Text("清除本地待确认提示？")},text={Text("这不会停止机器人，也不会重发请求。仅在已核对任务与建图状态后使用。")},confirmButton={TextButton({confirm=false;vm.clearUncertain()}){Text("已核对，清除")}},dismissButton={TextButton({confirm=false}){Text("返回")}})
+    Text("当前版本 ${BuildConfig.VERSION_NAME} · f1-operator-v1\n主要适配 11.5 英寸横屏，同时支持竖屏与分屏。\n当前版本面向可信局域网现有 ws:// 网关。",color=Muted)
 }
 @Composable private fun Footer(s:OperatorState) {
     Column(Modifier.fillMaxWidth().background(Color(0xFFE6EEF1)).padding(horizontal=16.dp,vertical=6.dp)) {

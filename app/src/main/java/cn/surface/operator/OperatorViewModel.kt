@@ -26,6 +26,9 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     private var retry:Job?=null
     private var url=savedUrl
     private var refreshCatalog=false
+    private val diagnostics=DiagnosticRecorder()
+    private var lastSendTick:Long?=null
+    private var logExportSnapshot:String?=null
     private data class Incoming(val epoch:Int,val raw:String,val receivedAt:Long)
     private val incoming=Channel<Incoming>(16)
     init {
@@ -53,26 +56,66 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
             while(isActive) {
                 delay(50)
                 val old=mutable.value
-                val next=StateReducer.tick(old,SystemClock.elapsedRealtime())
+                val tickAt=SystemClock.elapsedRealtime()
+                lastSendTick?.let {diagnostics.sendTick(tickAt-it,old.canDrive && old.manual.active)}
+                lastSendTick=tickAt
+                val next=StateReducer.tick(old,tickAt)
                 mutable.value=next
                 if(old.driving && !next.driving) {
                     connection?.send(packet("op" to "manual_stop","reason" to "telemetry_or_permission_expired"))
-                    log("控制状态已失效，手动已停用；恢复后需重新启用")
+                    log("控制状态已失效，手动已停用；恢复后需重新启用",reason="telemetry_or_permission_expired")
                 }
                 if(next.canDrive && next.manual.active) {
                     if(connection?.send(next.manual.encode(++sequence))!=true) stopManual("send_not_ready")
                 }
+                diagnostics.observeApp(mutable.value)
+                syncLogs()
             }
         }
     }
-    private fun log(message:String) {
+    private fun syncLogs() {
+        val logs=diagnostics.snapshot()
+        if(mutable.value.logs!==logs) mutable.value=mutable.value.copy(logs=logs)
+    }
+    fun clearLogs() {diagnostics.clear();syncLogs()}
+    fun beginLogExport():Boolean {
+        if(mutable.value.exportingLogs) return false
+        stopManual("export_log")
+        logExportSnapshot=diagnosticReport(mutable.value,BuildConfig.VERSION_NAME)
+        mutable.value=mutable.value.copy(exportingLogs=true)
+        return true
+    }
+    fun finishLogExport(uri:android.net.Uri?) {
+        val text=logExportSnapshot;logExportSnapshot=null
+        if(uri==null || text==null) {
+            mutable.value=mutable.value.copy(exportingLogs=false)
+            if(uri!=null) notice("导出快照已失效，请重新导出")
+            return
+        }
+        // ViewModel owns the snapshot and write job so rotation/navigation does not drop the export.
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val output=getApplication<Application>().contentResolver.openOutputStream(uri,"wt") ?: error("无法打开所选文件")
+                    output.bufferedWriter(Charsets.UTF_8).use {it.write("\uFEFF");it.write(text)}
+                }
+                notice("诊断日志已保存（点击导出时的全部保留记录）")
+            } catch(e:Exception) {
+                if(e is CancellationException) throw e
+                notice("日志保存失败：${e.message}")
+            } finally {mutable.value=mutable.value.copy(exportingLogs=false)}
+        }
+    }
+    private fun log(message:String,source:LogSource=LogSource.APP,reason:String=message,details:JsonObject=EMPTY) {
         val s=mutable.value
-        mutable.value=s.copy(message=message,logs=(listOf("${java.time.LocalTime.now().withNano(0)}  $message")+s.logs).take(160))
+        diagnostics.append(source,reason,details)
+        mutable.value=s.copy(message=message,logs=diagnostics.snapshot())
     }
     fun notice(message:String)=log(message)
     fun connect(address:String, demo:Boolean=false) {
         stopManual("switch_connection"); connection?.close(); retry?.cancel(); generation++
         wanted=true; url=address.trim()
+        diagnostics.connection(if(demo) "模拟" else url)
         if(!demo) {
             if(!(url.startsWith("ws://")||url.startsWith("wss://"))) {
                 wanted=false; mutable.value=StateReducer.disconnected(mutable.value,"地址无效")
@@ -81,7 +124,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
             preferences.edit().putString("url",url).apply()
         }
         // Explicitly choosing a new target starts a separate UI session.
-        mutable.value=OperatorState(demo=demo,page=Page.TASK,foreground=mutable.value.foreground,connection="连接中…")
+        mutable.value=OperatorState(demo=demo,page=Page.TASK,foreground=mutable.value.foreground,connection="连接中…",logs=diagnostics.snapshot(),exportingLogs=mutable.value.exportingLogs)
         open()
     }
     private fun open() {
@@ -149,13 +192,14 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         // An observing client must not seize the gateway with an unsolicited STOP.
         if(s.driving || s.manual.active) connection?.send(packet("op" to "manual_stop","reason" to reason))
         mutable.value=s.copy(driving=false,manual=s.manual.cleared())
-        if(s.driving || s.manual.active) log("手动已停用，全部手动输出已请求归零；需重新启用驾驶")
+        if(s.driving || s.manual.active) log("手动已停用，全部手动输出已请求归零；需重新启用驾驶",reason=reason,
+            details=packet("direction" to s.manual.direction,"brush" to s.manual.brush,"thrust" to s.manual.thrust))
     }
     fun explicitStop() {
         val s=mutable.value
         if(s.operator) connection?.send(packet("op" to "manual_stop","reason" to "operator"))
         mutable.value=s.copy(driving=false,manual=s.manual.cleared())
-        log("已请求停止手动输出；自动任务需使用停止任务")
+        log("已请求停止手动输出；自动任务需使用停止任务",reason="operator")
     }
     fun pick(enabled:Boolean) {
         stopManual("initial_pose_edit")
@@ -173,6 +217,14 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     }
     fun task(action:String) {
         if(mutable.value.canTaskAction(action)) submit(packet("op" to "task","action" to action,"task_type" to mutable.value.taskKind))
+    }
+    fun setForwardBoost(enabled:Boolean) {
+        val s=mutable.value
+        if(s.canSetForwardBoost && s.forwardBoostEnabled!=enabled)
+            submit(packet("op" to "task","action" to "set_forward_boost","task_type" to s.taskKind,"enabled" to enabled))
+        // Do not copy the requested value into telemetry. The gateway waits for the
+        // controller's post-request status before its final reply; pending survives
+        // timeout/disconnection and is never cleared by a coincidentally equal value.
     }
     fun selectMap(name:String) { mutable.value=mutable.value.copy(selectedMap=name) }
     fun mapping(action:String,name:String="",confirmed:Boolean=false) {
@@ -215,6 +267,9 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                     clientId=p.str("client_id"),capabilities=p.arr("capabilities").mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toSet(),
                     map=null,mapSession="",telemetry=EMPTY,receivedAt=-1,picking=false,candidate=null)
                 log(if(s.demo) "模拟网关已就绪，不连接硬件" else "握手成功，等待新遥测")
+                if("diagnostic_history" !in mutable.value.capabilities)
+                    diagnostics.append(LogSource.APP,"网关未声明诊断历史支持，仅记录本地事件和收到的桥状态；完整历史需新版网关")
+                syncLogs()
                 refreshCatalog=s.page==Page.MAPS
             }
             "map" -> mutable.value=s.copy(map=grid,mapSession=p.str("session_id").ifEmpty {s.mapSession.ifEmpty {s.runtime.str("session_id")}},candidate=null,picking=false)
@@ -222,7 +277,13 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                 if(!s.connected) return
                 val n=StateReducer.telemetry(s,p,SystemClock.elapsedRealtime(),receivedAt)
                 mutable.value=n
-                if(s.driving && !n.driving) { connection?.send(packet("op" to "manual_stop","reason" to "control_gate_changed")) }
+                diagnostics.telemetry(p)
+                diagnostics.observeApp(n)
+                syncLogs()
+                if(s.driving && !n.driving) {
+                    connection?.send(packet("op" to "manual_stop","reason" to "control_gate_changed"))
+                    log("控制条件变化，手动已停用",reason="control_gate_changed")
+                }
                 val saved=n.runtime.obj("last_saved")
                 if(saved.isNotEmpty() && saved!=s.runtime.obj("last_saved")) {
                     mutable.value=mutable.value.copy(selectedMap=saved.str("name"))
@@ -237,7 +298,8 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                     // A successful service reply must not leave pre-operation readiness usable.
                     mutable.value=s.copy(pending=s.pending-id,receivedAt=if(p.flag("success") && request!=null && !request.readOnly) -1 else s.receivedAt)
                 }
-                log(p.str("message",if(p.flag("success")) "请求已处理，请查看机器人状态" else "请求被拒绝"))
+                log(p.str("message",if(p.flag("success")) "请求已处理，请查看机器人状态" else "请求被拒绝"),LogSource.GATEWAY,
+                    details=packet("op" to p["op"],"action" to p["action"],"request_id" to p["request_id"],"success" to p["success"],"pending" to p["pending"]))
                 if(p.flag("pending") || !p.flag("success")) return
                 if("maps" in p) {
                     val entries=p.arr("maps").mapNotNull { it as? JsonObject }
@@ -251,7 +313,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                     refreshCatalog=true
                 }
             }
-            "error" -> { stopManual("gateway_error"); log("网关错误：${p.str("message")}") }
+            "error" -> { stopManual("gateway_error"); log("网关错误：${p.str("message")}",LogSource.GATEWAY) }
         }
     }
     override fun onCleared() { wanted=false; stopManual("app_closed"); connection?.close(); incoming.close() }
