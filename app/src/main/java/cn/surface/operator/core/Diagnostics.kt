@@ -56,7 +56,7 @@ class DiagnosticRecorder {
             signatures[key]=value;append(source,reason,details)
         }
     }
-    fun telemetry(p:JsonObject,wallTimeMillis:Long=System.currentTimeMillis()) {
+    fun telemetry(p:JsonObject,wallTimeMillis:Long=System.currentTimeMillis(),receivedAt:Long?=null,processedAt:Long?=null) {
         val state=p.obj("state")
         val history=p.obj("diagnostics")
         val session=history.str("session").take(160)
@@ -88,7 +88,14 @@ class DiagnosticRecorder {
             change("bridge",keys.map {state[it]},LogSource.BRIDGE,state.str("reason","桥状态更新"),
                 JsonObject(state.filterKeys {it in diagnosticFields.keys || it=="state" || it=="source" || it=="owner"}))
         }
-        change("control_fresh",p["control_fresh"],LogSource.GATEWAY,"桥状态新鲜度变化",packet("control_fresh" to p["control_fresh"]))
+        // Independent diagnostics packets must never look like missing bridge telemetry.
+        if("control_fresh" in p)
+            change("control_fresh",p["control_fresh"],LogSource.GATEWAY,"桥状态新鲜度变化",packet("control_fresh" to p["control_fresh"]))
+        if(receivedAt!=null && processedAt!=null) {
+            val age=(processedAt-receivedAt).coerceAtLeast(0)
+            change("ui_delay",age>=200,LogSource.APP,if(age>=200) "遥测界面处理延迟" else "遥测界面处理及时",
+                packet("ui_queue_ms" to age,"transport" to p.obj("_transport"),"stream" to p.obj("stream")))
+        }
     }
     fun observeApp(s:OperatorState) {
         change("telemetry_fresh",s.fresh,LogSource.APP,if(s.fresh) "遥测已恢复" else "遥测未收到或超过 800 ms",
@@ -138,6 +145,7 @@ fun diagnosticReport(s:OperatorState,version:String):String=buildString {
     appendLine("日志仅保留本次 App 进程内最近 ${DiagnosticRecorder.MAX_ENTRIES} 条；网关仅补发最近 50 条。")
     appendLine("记录数：${s.logs.size}；协商能力：${s.capabilities.sorted().joinToString()}")
     appendLine("最近收到的桥状态（可能已过期）："+JsonObject(s.telemetry.obj("state").filterKeys {it in diagnosticFields.keys}))
+    appendLine("最近收到的显示链路指标（可能已过期）：${s.telemetry.obj("stream")}；本地接收：${s.telemetry.obj("_transport")}")
     appendLine()
     s.logs.asReversed().forEach {appendLine(it.exportLine())}
 }

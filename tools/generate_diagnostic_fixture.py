@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
-parser.add_argument('--reference', default='reference/surface_robot_Lplus_geometry')
+parser.add_argument('--reference', default='reference/surface_robot_develop_20261109')
 args = parser.parse_args()
 sys.path.insert(0, str(root / args.reference / 'src/f1_operator_gateway'))
 from operator_gateway.diagnostics import DiagnosticHistory

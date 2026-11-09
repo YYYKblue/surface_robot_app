@@ -155,16 +155,9 @@ private val Background=Color(0xFFF1F5F7)
     HorizontalDivider()
     Text(if(s.fresh && task.flag("fresh")) phaseLabels[task.str("phase")] ?: task.str("phase","等待任务状态") else "任务状态未知",style=MaterialTheme.typography.titleLarge,color=Teal)
     Text(if(s.demo) "模拟，不驱动硬件" else if(s.fresh && task.flag("fresh")) {if(task.flag("output_enabled")) "实际输出模式" else "预览模式，不驱动硬件"} else "输出模式未确认",color=Muted)
-    val blockers=task.arr("start_blockers").mapNotNull { (it as? JsonObject)?.str("message") }.filter {it.isNotBlank()}
-    Info(when {
-        !s.fresh->"连接中断或遥测过期，禁止启动"
-        !s.taskSupported->"网关未声明完整任务能力"
-        !s.operator->"其他操作端占用控制权"
-        s.pending.isNotEmpty()->"操作结果待确认；不会自动重发"
-        blockers.isNotEmpty()->blockers.joinToString("\n")
-        s.canStart->"启动条件已满足"
-        else->"请查看当前阶段和机器人状态"
-    },!s.canStart)
+    Info(s.startConditionText,!s.canStart)
+    if(s.fresh && loc.flag("fresh") && loc.flag("ready") && task.flag("fresh") && !task.flag("can_start"))
+        Text("定位就绪与任务启动检查分别判断；请按所选任务的原始原因排查。",style=MaterialTheme.typography.bodySmall,color=Muted)
     Action("开始新任务",s.canStart){vm.task("start")}
     Action("停止任务",s.canTaskAction("stop"),true){vm.task("stop")}
     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -240,6 +233,7 @@ private val Background=Color(0xFFF1F5F7)
     var name by remember {mutableStateOf("")}
     var confirm by remember {mutableStateOf(false)}
     Title("建图","使用手动驾驶探索，地图保存在机器人端")
+    Text("新版网关的建图底图默认最多每 2 秒更新一次，船体位姿独立刷新。",style=MaterialTheme.typography.bodySmall,color=Muted)
     Info(if(s.mappingSupported) "模式：${s.runtime.str("phase","待机")}\n${s.runtime.str("message")}" else "需要受管网关 operator_system.launch.py",!s.mappingSupported)
     Action("开始建图",s.canMapping("start")){vm.mapping("start")}
     OutlinedButton({vm.page(Page.MANUAL)},modifier=Modifier.fillMaxWidth()){Text("前往手动驾驶探索")}

@@ -1,0 +1,116 @@
+[
+  {
+    "type": "hello",
+    "protocol": "f1-operator-v1",
+    "session_id": "fixture-stream",
+    "client_id": "fixture-client",
+    "capabilities": [
+      "task_selection",
+      "initial_pose",
+      "start_conditions",
+      "task_tracks",
+      "diagnostic_history"
+    ]
+  },
+  {
+    "type": "map",
+    "runtime_session_id": "runtime-a",
+    "map": {
+      "frame_id": "map",
+      "width": 4,
+      "height": 3,
+      "resolution": 0.05,
+      "origin": {
+        "x": -1.0,
+        "y": 2.0,
+        "yaw": 0.0
+      },
+      "encoding": "indexed8_zlib",
+      "data_zlib_base64": "eAFjYGRkYmJkYGIE0gAAXwAP",
+      "revision": 7
+    }
+  },
+  {
+    "type": "tracks",
+    "session_id": "fixture-stream",
+    "tasks": {
+      "rectangle": {
+        "frame_id": "map",
+        "map_id": "fixture-map",
+        "run_id": "fixture-run",
+        "segments": [
+          [
+            [
+              0.1,
+              0.2
+            ],
+            [
+              0.2,
+              0.2
+            ]
+          ],
+          [
+            [
+              0.4,
+              0.2
+            ],
+            [
+              0.5,
+              0.2
+            ]
+          ]
+        ],
+        "point_count": 4,
+        "truncated": false
+      }
+    }
+  },
+  {
+    "type": "diagnostics",
+    "diagnostics": {
+      "session": "fixture-stream",
+      "events": [
+        {
+          "id": 1,
+          "time_unix": 1794204000.125,
+          "source": "gateway",
+          "reason": "input_timeout",
+          "details": {
+            "input_age_ms": 310.0,
+            "input_timeout_ms": 250.0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "telemetry",
+    "stream": {
+      "session": "fixture-stream",
+      "sequence": 1,
+      "server_queue_ms": 35.0
+    },
+    "control_fresh": true,
+    "active_client": "fixture-client",
+    "task_busy": false,
+    "operation_pending": false,
+    "runtime": {
+      "session_id": "runtime-a",
+      "mode": "localization",
+      "map_available": true
+    },
+    "localization": {
+      "map_id": "fixture-map",
+      "fresh": true
+    },
+    "tasks": {
+      "rectangle": {
+        "task_type": "rectangle",
+        "phase": "STOPPED",
+        "fresh": true,
+        "map_id": "fixture-map",
+        "run_id": "fixture-run"
+      }
+    }
+  }
+]

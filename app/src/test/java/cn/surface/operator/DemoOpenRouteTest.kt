@@ -39,14 +39,14 @@ class DemoOpenRouteTest {
             val result=tasks.last()
             assertEquals("COMPLETE",result.str("phase"));assertEquals("remaining_open_route",result.str("completion_scope"))
             assertFalse(result.flag("coverage_complete"));assertTrue(result.arr("remaining_contact_intervals").isNotEmpty())
-            assertEquals(5,result.obj("expected_track").arr("cleaning_segments").size)
+            assertEquals(5,result.long("edge_count").toInt())
+            assertFalse("expected_track" in result);assertFalse("actual_track" in result)
             assertEquals(0L,result.long("route_chain_index"));assertEquals(2L,result.long("route_chain_count"))
             assertFalse(result.flag("output_enabled"))
             assertEquals(.4,result.num("map_front_clearance_m"),1e-9)
             assertEquals(.33,result.num("wall_target_m"),0.0)
             assertEquals(.32,result.num("wall_band_min_m"),0.0)
             assertEquals(.36,result.num("wall_band_max_m"),0.0)
-            assertEquals("boat_center_stop",result.obj("expected_track").str("basis"))
             tasks.filter {it.str("phase")=="EDGE_STOP"}.forEach {assertEquals(.4,it.num("map_front_clearance_m"),1e-9)}
         } finally {gateway.close();scope.cancel()}
     }

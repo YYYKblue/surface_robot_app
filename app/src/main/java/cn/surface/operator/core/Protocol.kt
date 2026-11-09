@@ -1,6 +1,10 @@
 package cn.surface.operator.core
 
+import android.graphics.Bitmap
 import kotlinx.serialization.json.*
+import java.util.Base64
+import java.util.zip.DataFormatException
+import java.util.zip.Inflater
 import kotlin.math.*
 
 val EMPTY = JsonObject(emptyMap())
@@ -41,6 +45,24 @@ fun JsonArray.polylines(): List<List<Point>> {
 data class Pose(val x: Double, val y: Double, val yaw: Double, val revision: Long)
 class GridMap(val width: Int, val height: Int, val resolution: Double, val origin: Point,
               val yaw: Double, val revision: Long, val frame: String, val cells: ByteArray) {
+    @Volatile private var image: Bitmap? = null
+
+    /** Called by the map worker before publication. No per-cell drawing on the UI thread. */
+    @Synchronized fun prepareImage(): Bitmap {
+        image?.let { return it }
+        val bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888)
+        val row=IntArray(width)
+        for(y in 0 until height) {
+            for(x in 0 until width) {
+                val cell=cells[(height-1-y)*width+x].toInt()
+                row[x]=when {cell<0 -> 0xFFEEF2F3.toInt(); cell>50 -> 0xFF536875.toInt(); else -> 0xFFFFFFFF.toInt()}
+            }
+            bitmap.setPixels(row,0,width,0,y,width,1)
+        }
+        image=bitmap
+        return bitmap
+    }
+
     companion object {
         const val MAX_CELLS = 4_000_000
         fun parse(raw: JsonObject): GridMap {
@@ -48,15 +70,49 @@ class GridMap(val width: Int, val height: Int, val resolution: Double, val origi
             require(w in 1..8192 && h in 1..8192 && w*h <= MAX_CELLS) { "地图尺寸超出支持范围（最多 400 万栅格）" }
             val r = raw.num("resolution")
             require(r > 0 && r <= 100) { "地图分辨率无效" }
-            val data = raw.arr("data")
-            require(data.size.toLong() == w*h) { "地图数据长度不匹配" }
-            val cells = ByteArray(data.size) { i ->
-                val v = (data[i] as? JsonPrimitive)?.intOrNull
-                require(v != null && v in -1..100) { "地图包含无效栅格" }; v.toByte()
-            }
             val o = raw.obj("origin")
             for (k in listOf("x", "y", "yaw")) require(o.num(k, Double.NaN).isFinite()) { "地图原点无效" }
+            val size=(w*h).toInt()
+            val cells=when(raw.str("encoding")) {
+                "indexed8_zlib" -> decodeIndexed(raw.str("data_zlib_base64"),size)
+                "" -> {
+                    val data=raw.arr("data")
+                    require(data.size==size) { "地图数据长度不匹配" }
+                    ByteArray(size) { i ->
+                        val v=(data[i] as? JsonPrimitive)?.intOrNull
+                        require(v!=null && v in -1..100) { "地图包含无效栅格" }; v.toByte()
+                    }
+                }
+                else -> throw IllegalArgumentException("不支持的地图编码：${raw.str("encoding")}")
+            }
             return GridMap(w.toInt(),h.toInt(),r,Point(o.num("x"),o.num("y")),o.num("yaw"),raw.long("revision"),raw.str("frame_id"),cells)
+        }
+
+        private fun decodeIndexed(encoded:String,size:Int):ByteArray {
+            // Even an uncompressed zlib stream needs only a small framing overhead.
+            require(encoded.length<=((size.toLong()+65536)*4/3+4)) { "地图压缩数据过大" }
+            val compressed=try {Base64.getDecoder().decode(encoded)}
+                catch(e:IllegalArgumentException) {throw IllegalArgumentException("地图 Base64 无效",e)}
+            val decoder=Inflater()
+            try {
+                decoder.setInput(compressed)
+                val pixels=ByteArray(size+1)
+                var count=0
+                while(!decoder.finished() && count<pixels.size) {
+                    val n=decoder.inflate(pixels,count,pixels.size-count)
+                    require(n>0 || decoder.finished()) { "地图压缩数据不完整或需要字典" }
+                    count+=n
+                }
+                require(count==size && decoder.finished() && decoder.remaining==0) { "地图压缩数据与尺寸不一致" }
+                return ByteArray(size) {i -> when(pixels[i].toInt()) {
+                    0 -> (-1).toByte()
+                    1 -> 0
+                    2 -> 100
+                    else -> throw IllegalArgumentException("地图包含无效颜色索引")
+                }}
+            } catch(e:DataFormatException) {
+                throw IllegalArgumentException("地图 zlib 数据无效",e)
+            } finally {decoder.end()}
         }
     }
 }

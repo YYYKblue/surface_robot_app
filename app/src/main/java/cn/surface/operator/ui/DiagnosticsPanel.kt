@@ -145,7 +145,14 @@ private fun bridgeSummary(s:OperatorState,expanded:Boolean):String {
             append("\n串口重连：${field("reconnects")} · 拒绝指令：${field("rejected_commands")}")
             append("\n控制者：${field("owner")} · 原因：${field("reason")}")
             append("\n连接：${s.connection} · 活动操作端：${s.telemetry.str("active_client","未占用")}")
-            append("\n网关日志会话：${s.telemetry.obj("diagnostics").str("session","未提供")}")
+            append("\n网关日志会话：${s.logs.firstOrNull {it.session.isNotEmpty()}?.session ?: "未提供"}")
+            val stream=s.telemetry.obj("stream")
+            if(stream.isNotEmpty()) {
+                append("\n遥测序号：${stream.str("sequence","未知")} · 网关排队：${stream.str("server_queue_ms","未知")} ms")
+                append("\n网关调度间隔：${stream.str("tick_gap_ms","未知")} ms · 控制反馈年龄：${stream.str("control_age_ms","未知")} ms")
+            }
+            val local=s.telemetry.obj("_transport")
+            if(local.isNotEmpty()) append("\n本地接收：$local")
         }
     }
 }

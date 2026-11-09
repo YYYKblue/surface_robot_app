@@ -8,7 +8,6 @@ import cn.surface.operator.connection.*
 import cn.surface.operator.core.*
 import cn.surface.operator.mock.DemoGateway
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.*
@@ -29,29 +28,16 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     private val diagnostics=DiagnosticRecorder()
     private var lastSendTick:Long?=null
     private var logExportSnapshot:String?=null
-    private data class Incoming(val epoch:Int,val raw:String,val receivedAt:Long)
-    private val incoming=Channel<Incoming>(16)
-    init {
-        viewModelScope.launch {
-            for((epoch,raw,receivedAt) in incoming) {
-                if(epoch!=generation) continue
-                try {
-                    val (p,grid)=withContext(Dispatchers.Default) {
-                        val p=wireJson.parseToJsonElement(raw) as? JsonObject ?: error("消息不是对象")
-                        val g=when(p.str("type")) {
-                            "map" -> (if("map" in p) p["map"] else p).let { if(it is JsonObject) GridMap.parse(it) else null }
-                            "reply" -> (p["preview"] as? JsonObject)?.let(GridMap::parse)
-                            else -> null
-                        }
-                        (if(g!=null) JsonObject(p.filterKeys { it!="map" && it!="preview" && it!="data" }) else p) to g
-                    }
-                    if(epoch==generation) receive(p,grid,receivedAt)
-                } catch(e:Exception) {
-                    if(e is CancellationException) throw e
-                    if(epoch==generation) { log("接收数据无效：${e.message}"); connection?.close(); lost("协议数据无效，已断开") }
-                }
+    private var previewRequestId:String?=null
+    private val incoming=GatewayInbox(viewModelScope,SystemClock::elapsedRealtime,
+        deliver={value -> if(value.epoch==generation) receive(value.packet,value.grid,value.receivedAt)},
+        report={epoch,message,fatal -> viewModelScope.launch {
+            if(epoch==generation) {
+                log(message)
+                if(fatal) {connection?.close();lost(message)}
             }
-        }
+        }})
+    init {
         viewModelScope.launch {
             while(isActive) {
                 delay(50)
@@ -131,10 +117,9 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         if(!wanted || !mutable.value.foreground) return
         connection?.close()
         val epoch=++generation
+        incoming.reset(epoch);previewRequestId=null
         val packetCallback:(String)->Unit={raw ->
-            if(epoch==generation && !incoming.trySend(Incoming(epoch,raw,SystemClock.elapsedRealtime())).isSuccess) viewModelScope.launch {
-                if(epoch==generation) { connection?.close(); lost("接收积压，重新连接以同步最新状态") }
-            }
+            incoming.offer(epoch,raw,SystemClock.elapsedRealtime())
         }
         val statusCallback:(Boolean,String)->Unit={ok,message -> viewModelScope.launch {
             if(epoch==generation) {
@@ -150,6 +135,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     }
     private fun lost(reason:String) {
         generation++ // Drop queued packets from the dead connection, including decoded maps.
+        incoming.reset(generation);previewRequestId=null
         mutable.value=StateReducer.disconnected(mutable.value,reason).let { it.copy(pending=it.pending.filterValues {request->!request.readOnly}) }
         log("$reason；旧指令不会重发")
         retry?.cancel()
@@ -157,6 +143,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     }
     fun disconnect() {
         wanted=false; retry?.cancel(); stopManual("disconnect"); connection?.close(); generation++
+        incoming.reset(generation);previewRequestId=null
         mutable.value=StateReducer.disconnected(mutable.value,"已断开")
     }
     fun foreground(value:Boolean) {
@@ -189,17 +176,23 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     fun direction(value:String)=manual(mutable.value.manual.copy(direction=value))
     fun stopManual(reason:String="operator") {
         val s=mutable.value
-        // An observing client must not seize the gateway with an unsolicited STOP.
-        if(s.driving || s.manual.active) connection?.send(packet("op" to "manual_stop","reason" to reason))
+        // send() may synchronously report a failure and reduce disconnected state.
+        // Clear intent first so that callback cannot be overwritten by this snapshot.
         mutable.value=s.copy(driving=false,manual=s.manual.cleared())
-        if(s.driving || s.manual.active) log("手动已停用，全部手动输出已请求归零；需重新启用驾驶",reason=reason,
-            details=packet("direction" to s.manual.direction,"brush" to s.manual.brush,"thrust" to s.manual.thrust))
+        // An observing client must not seize the gateway with an unsolicited STOP.
+        if(s.driving || s.manual.active) {
+            val sent=connection?.send(packet("op" to "manual_stop","reason" to reason))==true
+            log(if(sent) "手动已停用，全部手动输出已请求归零；需重新启用驾驶"
+                else "手动已停用，但停止请求未发送；请核对连接和机器人状态",reason=reason,
+                details=packet("direction" to s.manual.direction,"brush" to s.manual.brush,"thrust" to s.manual.thrust,"stop_sent" to sent))
+        }
     }
     fun explicitStop() {
         val s=mutable.value
-        if(s.operator) connection?.send(packet("op" to "manual_stop","reason" to "operator"))
         mutable.value=s.copy(driving=false,manual=s.manual.cleared())
-        log("已请求停止手动输出；自动任务需使用停止任务",reason="operator")
+        val sent=s.operator && connection?.send(packet("op" to "manual_stop","reason" to "operator"))==true
+        log(if(sent) "已请求停止手动输出；自动任务需使用停止任务"
+            else "停止请求未发送：连接不可用或无操作权限；请核对机器人状态",reason="operator",details=packet("stop_sent" to sent))
     }
     fun pick(enabled:Boolean) {
         stopManual("initial_pose_edit")
@@ -244,6 +237,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         stopManual("discrete_operation")
         val s=mutable.value; val id=UUID.randomUUID().toString()
         val command=JsonObject(base+mapOf("request_id" to JsonPrimitive(id)))
+        if(base.str("op")=="mapping" && base.str("action")=="preview") previewRequestId=id
         val pending=Pending(id,command,SystemClock.elapsedRealtime(),s.task.str("run_id"),s.localization.long("initial_pose_stamp_ns"))
         mutable.value=s.copy(pending=s.pending+(id to pending))
         if(connection?.send(command)!=true) {
@@ -257,29 +251,44 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
             mutable.value=s.copy(pending=emptyMap()); log("已清除本地待确认提示；未重发任何操作，请以机器人状态为准")
         }
     }
-    fun closePreview() { mutable.value=mutable.value.copy(preview=null) }
+    fun closePreview() { previewRequestId=null;mutable.value=mutable.value.copy(preview=null) }
     private fun receive(p:JsonObject,grid:GridMap?,receivedAt:Long) {
         val s=mutable.value
         when(p.str("type")) {
             "hello" -> {
                 if(p.str("protocol")!="f1-operator-v1") { wanted=false; connection?.close(); lost("网关协议不兼容"); return }
-                mutable.value=s.copy(connected=true,connection=if(s.demo) "模拟模式 · 不连接硬件" else "已连接",
-                    clientId=p.str("client_id"),capabilities=p.arr("capabilities").mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toSet(),
-                    map=null,mapSession="",telemetry=EMPTY,receivedAt=-1,picking=false,candidate=null)
+                val n=StateReducer.hello(s,p)
+                if(n===s) return
+                mutable.value=n.copy(connection=if(s.demo) "模拟模式 · 不连接硬件" else "已连接")
                 log(if(s.demo) "模拟网关已就绪，不连接硬件" else "握手成功，等待新遥测")
                 if("diagnostic_history" !in mutable.value.capabilities)
                     diagnostics.append(LogSource.APP,"网关未声明诊断历史支持，仅记录本地事件和收到的桥状态；完整历史需新版网关")
                 syncLogs()
                 refreshCatalog=s.page==Page.MAPS
             }
-            "map" -> mutable.value=s.copy(map=grid,mapSession=p.str("session_id").ifEmpty {s.mapSession.ifEmpty {s.runtime.str("session_id")}},candidate=null,picking=false)
+            "map" -> mutable.value=StateReducer.map(s,p,grid,receivedAt)
+            "tracks" -> {
+                val n=StateReducer.tracks(s,p)
+                mutable.value=n
+                if(s.driving && !n.driving) {
+                    connection?.send(packet("op" to "manual_stop","reason" to "control_gate_changed"))
+                    log("网关会话变化，手动已停用",reason="control_gate_changed")
+                }
+            }
+            "diagnostics" -> {diagnostics.telemetry(p);syncLogs()}
+            "decoded_preview" -> if(grid!=null && p.str("request_id")==previewRequestId) {
+                stopManual("map_preview");mutable.value=mutable.value.copy(preview=grid,previewName=p.str("name"))
+            }
             "telemetry" -> {
                 if(!s.connected) return
                 val n=StateReducer.telemetry(s,p,SystemClock.elapsedRealtime(),receivedAt)
+                if(n===s) return
                 mutable.value=n
-                diagnostics.telemetry(p)
+                diagnostics.telemetry(p,receivedAt=receivedAt,processedAt=SystemClock.elapsedRealtime())
                 diagnostics.observeApp(n)
                 syncLogs()
+                if(s.manual.thrust && !n.manual.thrust && !n.telemetry.obj("state").flag("allow_fifth_thruster"))
+                    log("机器人撤销第五电推许可，已清除开关；许可恢复后需重新开启")
                 if(s.driving && !n.driving) {
                     connection?.send(packet("op" to "manual_stop","reason" to "control_gate_changed"))
                     log("控制条件变化，手动已停用",reason="control_gate_changed")

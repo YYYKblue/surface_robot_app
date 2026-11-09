@@ -4,6 +4,9 @@ import cn.surface.operator.connection.GatewayConnection
 import cn.surface.operator.core.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
+import java.util.Base64
+import java.util.zip.Deflater
+import java.io.ByteArrayOutputStream
 import kotlin.math.*
 
 /** Entirely in-process fixture. This class has no network or hardware dependencies. */
@@ -24,6 +27,9 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     private var lastOperation=EMPTY
     private var boostPending=false
     private var saved=EMPTY
+    private val streamSession="demo-stream-${java.util.UUID.randomUUID()}"
+    private var streamSequence=0L
+    private var lastDiagnosticSent=0L
     private val diagnosticSession="demo-${java.util.UUID.randomUUID()}"
     private var diagnosticId=0L
     private val diagnosticEvents=java.util.ArrayDeque<JsonObject>()
@@ -45,19 +51,47 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     override fun connect() {
         live=true; status(true,"模拟连接")
         emit(packet("type" to "hello","protocol" to "f1-operator-v1","client_id" to "demo",
+            "session_id" to streamSession,
             "capabilities" to JsonArray(listOf("task_selection","initial_pose","start_conditions","task_stop","task_tracks","mapping","map_catalog","diagnostic_history","forward_boost").map(::JsonPrimitive))))
         record("gateway","input_timeout",packet("input_age_ms" to 310,"input_timeout_ms" to 250,"had_lease" to true,"example" to "模拟历史示例，非当前故障"))
         record("bridge","ACK progress timeout",packet("ctrl_age_sec" to .02,"ack_age_sec" to .35,"last_stop_reason" to "ACK progress timeout","example" to "模拟历史示例，非当前故障"))
         record("bridge","模拟桥已就绪",packet("state" to "READY","source" to "NANO","motion_authorized" to false))
-        emit(packet("type" to "map","map" to grid()))
-        job=scope.launch { while(isActive && live) { tick++; advance(); emit(telemetry()); delay(100) } }
+        emitMap()
+        job=scope.launch { while(isActive && live) {
+            tick++; advance(); emit(telemetry())
+            if(tick%5==1) emitTracks()
+            emitDiagnostics()
+            if(mode=="mapping" && tick%20==0) {revision++;emitMap()}
+            delay(100)
+        } }
     }
+    private fun emitMap()=emit(packet("type" to "map","runtime_session_id" to "demo-$session","map" to if(mode=="idle") JsonNull else grid()))
+    private fun emitDiagnostics() {
+        val events=diagnosticEvents.filter {it.long("id")>lastDiagnosticSent}
+        if(events.isNotEmpty()) {
+            emit(packet("type" to "diagnostics","diagnostics" to packet("session" to diagnosticSession,"events" to JsonArray(events))))
+            lastDiagnosticSent=diagnosticId
+        }
+    }
+    private fun emitTracks()=emit(packet("type" to "tracks","session_id" to streamSession,"tasks" to buildJsonObject {
+        if(mode=="localization") runs.forEach { (kind,r) -> put(kind,packet("frame_id" to "map","map_id" to "demo/$mapName","run_id" to r.id,
+            "segments" to JsonArray(listOf(points(r.points))),"point_count" to r.points.size,"truncated" to false)) }
+    }))
     private fun grid(name:String=mapName):JsonObject=packet("frame_id" to "map","revision" to revision,"width" to 160,"height" to 100,
         "resolution" to 0.05,"origin" to packet("x" to 0,"y" to 0,"yaw" to 0),
-        "data" to JsonArray(List(160*100) { i ->
+        "encoding" to "indexed8_zlib","data_zlib_base64" to compress(ByteArray(160*100) { i ->
             val cx=i%160; val cy=i/160
-            JsonPrimitive(if(cx<4 || cx>155 || cy<4 || cy>95) 100 else if(name.contains("开放") && cx>100 && cy>75) 100 else 0)
+            (if(cx<4 || cx>155 || cy<4 || cy>95) 2 else if(name.contains("开放") && cx>100 && cy>75) 2 else 1).toByte()
         }))
+    private fun compress(pixels:ByteArray):String {
+        val encoder=Deflater(1)
+        return try {
+            encoder.setInput(pixels);encoder.finish()
+            val result=ByteArrayOutputStream();val buffer=ByteArray(4096)
+            while(!encoder.finished()) {val n=encoder.deflate(buffer);result.write(buffer,0,n)}
+            Base64.getEncoder().encodeToString(result.toByteArray())
+        } finally {encoder.end()}
+    }
     override fun send(value:JsonObject):Boolean {
         if(!live) return false
         val op=value.str("op"); val action=value.str("action")
@@ -115,7 +149,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                     if(action=="load") mapName=value.str("name")
                     runs.values.forEach { it.phase="IDLE"; it.id=""; it.edge=0; it.boost=false; it.cutoff=false; it.points.clear() }
                     emit(telemetry())
-                    emit(packet("type" to "map","map" to if(mode=="idle") JsonNull else grid()))
+                    emitMap()
                 }
                 "save","save_end","retry_export" -> {
                     owner="demo"
@@ -125,13 +159,14 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                     catalog.add(0,packet("name" to name,"valid" to true,"saved_at" to "刚刚 · 模拟"))
                     saved=packet("name" to name,"paths" to JsonArray(listOf("pbstream","pgm","yaml").map { JsonPrimitive("/demo/maps/$name.$it") }))
                     extra=packet("saved" to saved)
-                    if(action=="save_end") { mode="idle"; session++; emit(packet("type" to "map","map" to JsonNull)) }
+                    if(action=="save_end") { mode="idle"; session++; emitMap() }
                 }
             }
             lastOperation=packet("request_id" to value.str("request_id"),"success" to success,"message" to message)
         }
         emit(JsonObject(packet("type" to "reply","op" to op,"action" to action,"request_id" to value.str("request_id"),"success" to success,"message" to message)+extra))
         emit(telemetry())
+        emitTracks();emitDiagnostics()
         return true
     }
     private fun advance() {
@@ -195,8 +230,6 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                     else->""
                 }
                 val edges=demoEdges.getValue(kind)
-                val start=edges.first().start
-                val reference=edges.first().let {Point(it.wallStart.x+it.tx*.2,it.wallStart.y+it.ty*.2)}
                 put(kind,packet("task_type" to kind,"fresh" to (mode=="localization"),"map_id" to mapId,"run_id" to r.id,
                     "phase" to r.phase,"can_start" to (ready && !boostPending && active.isEmpty() && runs.values.none {it.phase=="PAUSED"}),"output_enabled" to false,
                     "forward_boost_enabled" to r.boost,"forward_boost_active" to boostActive,"forward_boost_editable" to boostEditable,
@@ -211,24 +244,16 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                     "edge_count" to edges.size,"reason" to "模拟状态回放，不代表真实换边运动或空间可行性",
                     "completion_scope" to if(kind=="l") "remaining_open_route" else "rectangle_route","coverage_complete" to false,
                     "remaining_contact_intervals" to JsonArray(listOf(packet("edge_id" to "edge_0","start" to 0,"end" to .2))),
-                    "completed_at_ns" to if(r.phase=="COMPLETE") System.currentTimeMillis()*1_000_000 else 0,
-                    "expected_track" to packet("frame_id" to "map","map_id" to mapId,
-                        "basis" to "boat_center_stop","wall_target_m" to DemoGeometry.WALL_TARGET,
-                        "wall_band_min_m" to DemoGeometry.WALL_MIN,"wall_band_max_m" to DemoGeometry.WALL_MAX,"front_stop_m" to DemoGeometry.FRONT_STOP,
-                        "cleaning_segments" to JsonArray(edges.mapIndexed { i,e->packet("edge_id" to "edge_$i","points" to points(listOf(e.start,e.stop))) }),
-                        "navigation_path" to JsonArray(emptyList()),
-                        "start_region" to packet("polygon" to points(listOf(Point(start.x-.1,start.y-.1),Point(start.x+.1,start.y-.1),Point(start.x+.1,start.y+.1),Point(start.x-.1,start.y+.1))),
-                            "reference_wall_point" to JsonArray(listOf(JsonPrimitive(reference.x),JsonPrimitive(reference.y))))),
-                    "actual_track" to packet("frame_id" to "map","map_id" to mapId,"run_id" to r.id,"segments" to JsonArray(listOf(points(r.points))),"point_count" to r.points.size,"truncated" to false)))
+                    "completed_at_ns" to if(r.phase=="COMPLETE") System.currentTimeMillis()*1_000_000 else 0))
+
             }
         }
         return packet("type" to "telemetry","active_client" to owner.ifEmpty { null },"task_busy" to (active.isNotEmpty() || runs.values.any {it.phase=="PAUSED"}),"operation_pending" to boostPending,
-            "diagnostics" to packet("session" to diagnosticSession,"events" to JsonArray(diagnosticEvents.toList())),
+            "stream" to packet("session" to streamSession,"sequence" to ++streamSequence,"server_queue_ms" to 0),
             "active_tasks" to JsonArray(active.map(::JsonPrimitive)),"can_set_initial_pose" to (mode=="localization" && active.isEmpty()),"tasks" to tasks,
             "state" to packet("connected" to true,"state" to "READY","source" to "NANO","armed" to true,"motion_authorized" to false,"allow_fifth_thruster" to true,"ack_age_sec" to .02,"ctrl_age_sec" to .02,"reason" to "模拟，不驱动硬件",
                 "last_stop_reason" to "","command_remaining_sec" to .15,"max_tx_gap_sec" to .052,"reconnects" to 0,"rejected_commands" to 0,"owner" to "demo"),"control_fresh" to true,
             "pose" to if(mode=="idle") JsonNull else packet("x" to x,"y" to y,"yaw" to yaw),
-            "scan" to if(mode=="idle") JsonNull else packet("frame_id" to "map","points" to points(List(80){i->Point(.25+i*.095,.25+.02*sin(i.toDouble()))})),
             "localization" to packet("fresh" to (mode=="localization"),"map_id" to mapId,"ready" to ready,"initial_pose_received" to (poseAt>0),"initial_pose_stamp_ns" to poseAt,"stable_elapsed_sec" to if(ready) 1 else 0,"stable_sec" to 1,"scan_fresh" to true,"pose_fresh" to true),
             "runtime" to packet("mode" to mode,"phase" to mode.uppercase(),"session_id" to "demo-$session","current_map" to if(mode=="localization") mapName else "","busy" to false,"scan_fresh" to true,"map_available" to (mode!="idle"),"pose_fresh" to (mode!="idle"),"last_operation" to lastOperation,"last_saved" to saved,"maps_directory" to "/demo/maps","message" to "模拟数据，仅验证界面流程"))
     }

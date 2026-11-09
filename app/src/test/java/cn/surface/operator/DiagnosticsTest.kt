@@ -6,6 +6,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DiagnosticsTest {
+    @Test fun independentHistoryDoesNotInvalidateBridgeStatusAndUiDelayLogsTransitions() {
+        val logs=DiagnosticRecorder()
+        val core=packet("type" to "telemetry","control_fresh" to true,"stream" to packet("sequence" to 12,"server_queue_ms" to 30))
+        logs.telemetry(core,receivedAt=100,processedAt=110)
+        logs.telemetry(packet("type" to "diagnostics","diagnostics" to history("split",event(1)).obj("diagnostics")))
+        logs.telemetry(core,receivedAt=100,processedAt=350)
+        logs.telemetry(core,receivedAt=100,processedAt=400)
+        assertEquals(1,logs.snapshot().count {it.reason=="桥状态新鲜度变化"})
+        assertEquals(1,logs.snapshot().count {it.reason=="遥测界面处理延迟"})
+        assertEquals(1,logs.snapshot().count {it.eventId==1L})
+        assertEquals(30L,logs.snapshot().first {it.reason=="遥测界面处理延迟"}.details.obj("stream").long("server_queue_ms"))
+    }
     private fun history(session:String,vararg events:JsonObject)=packet("type" to "telemetry","control_fresh" to true,
         "diagnostics" to packet("session" to session,"events" to JsonArray(events.toList())))
     private fun event(id:Long,reason:String="input_timeout",time:Any?=1794096000.125)=packet("id" to id,

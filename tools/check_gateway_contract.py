@@ -9,7 +9,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
-parser.add_argument('--reference', default='reference/surface_robot_Lplus_geometry')
+parser.add_argument('--reference', default='reference/surface_robot_develop_20261109')
 parser.add_argument('--forward-boost', action='store_true', help='Also validate capability-gated boost commands on a new gateway')
 args = parser.parse_args()
 sys.path.insert(0, str(root / args.reference / 'src/f1_operator_gateway'))

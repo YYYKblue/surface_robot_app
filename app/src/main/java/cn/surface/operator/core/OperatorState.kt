@@ -16,11 +16,13 @@ data class OperatorState(
     val telemetry: JsonObject=EMPTY, val receivedAt: Long=-1, val now: Long=0,
     val map: GridMap?=null, val mapSession: String="", val preview: GridMap?=null, val previewName: String="",
     val page: Page=Page.TASK, val taskKind: String="rectangle",
+    val restoreTaskSelection: Boolean=true,
     val manual: ManualIntent=ManualIntent(), val driving: Boolean=false,
     val foreground: Boolean=true, val picking: Boolean=false, val candidate: Pose?=null,
     val pending: Map<String,Pending> = emptyMap(), val catalog: List<JsonObject> = emptyList(),
     val selectedMap: String="", val message: String="请连接机器人，或进入模拟模式", val logs: List<DiagnosticEntry> = emptyList(),
-    val exportingLogs:Boolean=false
+    val exportingLogs:Boolean=false,
+    val stream:StreamState=StreamState()
 ) {
     val fresh get()=connected && receivedAt>=0 && now-receivedAt in 0..799
     val runtime get()=telemetry.obj("runtime")
@@ -41,8 +43,8 @@ data class OperatorState(
     val manualAllowed get()=operator && foreground && page==Page.MANUAL && !picking && preview==null && !busy && pending.isEmpty()
     val canDrive get()=manualAllowed && driving
     val canSelectTask get()=operator && !busy && pending.isEmpty() && !picking
-    val canPose get()=operator && foreground && taskSupported && !busy && pending.isEmpty() && map?.frame=="map" && map.revision>0 && telemetry.flag("can_set_initial_pose")
-    val canStart get()=operator && foreground && taskSupported && !busy && pending.isEmpty() && !picking && task.flag("fresh") && task.flag("can_start")
+    val canPose get()=operator && foreground && taskSupported && !busy && pending.isEmpty() && mapMatchesRuntime && map?.frame=="map" && map.revision>0 && telemetry.flag("can_set_initial_pose")
+    val canStart get()=operator && foreground && taskSupported && !busy && pending.isEmpty() && !picking && mapMatchesRuntime && task.flag("fresh") && task.flag("can_start")
     fun canTaskAction(action: String): Boolean {
         if(action !in setOf("start","pause","stop","cancel")) return false
         if(action=="start") return canStart
@@ -72,7 +74,8 @@ data class OperatorState(
             else -> false
         }
     }
-    val matchingTaskMap get()=localization.str("map_id").let { it.isNotEmpty() && it==task.str("map_id") }
+    val mapMatchesRuntime get()=mapSession.isEmpty() || runtime.str("session_id").isEmpty() || mapSession==runtime.str("session_id")
+    val matchingTaskMap get()=mapMatchesRuntime && localization.str("map_id").let { it.isNotEmpty() && it==task.str("map_id") }
     val wallDistance get()=task.num("center_wall_distance_m",Double.NaN).takeIf {
         fresh && task.flag("fresh") && matchingTaskMap && task.flag("wall_fresh") && task.flag("wall_valid") && it.isFinite() && it>0
     }
@@ -82,9 +85,17 @@ data class OperatorState(
 object StateReducer {
     fun disconnected(s: OperatorState, reason: String)=s.copy(connected=false,connection=reason,
         clientId="",capabilities=emptySet(),receivedAt=-1,driving=false,manual=s.manual.cleared(),picking=false,candidate=null)
-    fun telemetry(s: OperatorState, p: JsonObject, now: Long, receivedAt:Long=now): OperatorState {
+    fun hello(s:OperatorState,p:JsonObject):OperatorState {
+        val next=StreamReducer.hello(s,p)
+        return if(next===s) s else next.copy(restoreTaskSelection=true)
+    }
+    fun tracks(s:OperatorState,p:JsonObject):OperatorState=StreamReducer.tracks(s,p)
+    fun map(s:OperatorState,p:JsonObject,grid:GridMap?,receivedAt:Long):OperatorState=StreamReducer.map(s,p,grid,receivedAt)
+    fun telemetry(original: OperatorState, raw: JsonObject, now: Long, receivedAt:Long=now): OperatorState {
+        val accepted=StreamReducer.telemetry(original,raw,now,receivedAt) ?: return original
+        val s=accepted.first; val p=accepted.second
         val oldSession=s.runtime.str("session_id"); val nextSession=p.obj("runtime").str("session_id")
-        val changed=oldSession.isNotEmpty() && oldSession!=nextSession
+        val changed=oldSession!=nextSession && (oldSession.isNotEmpty() || nextSession.isNotEmpty())
         val oldMap=s.localization.str("map_id"); val newMap=p.obj("localization").str("map_id")
         val mapChanged=oldMap.isNotEmpty() && oldMap!=newMap
         val remaining=s.pending.filterValues { request ->
@@ -104,12 +115,35 @@ object StateReducer {
             }
             !confirmed
         }
-        var next=s.copy(telemetry=p,receivedAt=receivedAt,now=now,pending=remaining)
+        var next=s.copy(telemetry=p,now=now,pending=remaining)
         // The gateway sends map:null + the new session before its first map. Do not
         // discard that new map when the following telemetry first reports the session.
-        if((changed || mapChanged) && (nextSession.isEmpty() || s.mapSession!=nextSession) ||
-            p.obj("runtime").let { it.isNotEmpty() && !it.flag("map_available") })
+        if(((changed || mapChanged) && (nextSession.isEmpty() || s.mapSession!=nextSession) ||
+            p.obj("runtime").let { it.isNotEmpty() && !it.flag("map_available") }) && s.stream.mapReceivedAt<=receivedAt)
             next=next.copy(map=null,picking=false,candidate=null)
+        if(changed || oldSession.isEmpty() && nextSession.isNotEmpty()) next=next.copy(stream=next.stream.copy(
+            retiredRuntimeSessions=retire(next.stream.retiredRuntimeSessions,oldSession,16),runtimeChangedAt=receivedAt))
+        // A new observer defaults to rectangle, but the robot may already be
+        // running an open-wall task. Focus the sole known active controller so
+        // its stop controls remain reachable while task selection is locked.
+        // Never change the target of an outstanding local request or guess
+        // among unknown/multiple active controllers.
+        if(next.fresh && s.pending.isEmpty() && !s.picking) {
+            val active=p.arr("active_tasks")
+            val activeKind=active.singleOrNull()?.let {it as? JsonPrimitive}?.contentOrNull
+                ?.takeIf {it in setOf("rectangle","l")}
+            val pausedKind=if(next.restoreTaskSelection && active.isEmpty())
+                listOf("rectangle","l").filter {kind ->
+                    val task=p.obj("tasks").obj(kind)
+                    task.flag("fresh") && task.str("phase")=="PAUSED" && task.str("run_id").isNotEmpty()
+                }.singleOrNull() else null
+            next=next.copy(taskKind=activeKind ?: pausedKind ?: next.taskKind,restoreTaskSelection=false)
+        }
+        // Revoking fifth-thruster permission must erase the saved intent.
+        // Otherwise the same held intent would restart it when permission
+        // returns, even though the gateway temporarily rejected its frames.
+        if(next.manual.thrust && !next.telemetry.obj("state").flag("allow_fifth_thruster"))
+            next=next.copy(manual=next.manual.copy(thrust=false))
         if(!next.canDrive) next=next.copy(driving=false,manual=next.manual.cleared())
         if(!next.canPose) next=next.copy(picking=false,candidate=null)
         return next

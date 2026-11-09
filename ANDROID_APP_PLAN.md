@@ -1,4 +1,8 @@
-# 水面机器人 Android 平板操作端方案
+# 水面机器人 Android 平板操作端方案（历史）
+
+> **历史设计资料，非当前功能清单。** 本文记录 2026-10-31 的 `feature/op` 审阅和首版计划。当前版本、构建及操作以 [README](README.md) 为准；稳定版差异见 [2026-11-09 审查记录](docs/DEVELOP_REVIEW_2026-11-09.md)，历次完成情况见 [CHANGELOG](docs/CHANGELOG.md)。
+>
+> v0.6.0 起已按上游取消雷达点、预期轨迹、起始范围框和停车点显示，改用压缩底图、实时船体与实际历史轨迹；原文对应图层和队列改进建议均属于当时方案。v0.7.0 基于 `develop` 核对，不能将本文的“未测试”“待实施”当作当前状态。
 
 日期：2026-10-31。需求：约 11.5 英寸安卓平板，型号未定，完整覆盖现有 Windows App 已实现功能。
 
@@ -68,7 +72,9 @@ Qt for Python 官方确有 [Android 部署工具](https://doc.qt.io/qtforpython-
 - 地图支持双指缩放、拖动、适配全图、船体回中和图层开关。设置位姿进入明确的编辑模式，选位置、拖船头方向、预览后发布；不能把普通地图拖动误认为定位操作。
 - 任务侧显示当前阶段和具体阻塞原因；不显示无依据的整场倒计时、预计剩余时间或“全池已清洁”结论。
 
-## 4. 全功能范围
+## 4. 首版全功能范围（历史）
+
+当前显示图层已调整，以下为首版约定；最新范围见 README。
 
 ### 4.1 作业与手动控制
 
@@ -133,7 +139,9 @@ Qt for Python 官方确有 [Android 部署工具](https://doc.qt.io/qtforpython-
 
 网络配置必须覆盖 `INTERNET` 和现有 `ws://` 明文局域网连接；采用受控的局域网部署配置，后续认证/WSS 单独协商，不用“信任所有证书”。参考 [Android 网络安全配置](https://developer.android.com/privacy-and-security/security-config)。面向 Android 17/API 37 及以上时需要处理局域网运行时权限，拒绝权限应给出明确状态，参考 [Android 局域网权限](https://developer.android.com/privacy-and-security/local-network-permission)。
 
-## 6. ROS 工作空间是否需要修改
+## 6. ROS 工作空间是否需要修改（当时判断）
+
+下表是原 `feature/op` 基线的建议，最新网关已加入压缩地图与有界流处理，不能据此推断 `develop` 仍存在全部旧问题。
 
 结论：实现现有功能全覆盖，不要求先重写 ROS 或变更底层消息。先以当前协议完成 Android 功能对齐。全功能联调使用 `operator_system.launch.py` 受管入口，防止只启动独立网关而缺失建图/地图能力。
 
