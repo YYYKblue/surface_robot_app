@@ -97,9 +97,9 @@ class DiagnosticsTest {
         logs.observeApp(s);logs.observeApp(s)
         val stale=StateReducer.tick(s,900);logs.observeApp(stale);logs.observeApp(stale)
         assertEquals(1,logs.snapshot().count {it.reason=="遥测未收到或超过 800 ms"})
-        logs.sendTick(210,true);logs.sendTick(250,true);logs.sendTick(50,true)
-        assertEquals(1,logs.snapshot().count {it.reason=="手动发送定时器延迟"})
-        assertEquals(1,logs.snapshot().count {it.reason=="手动发送定时器恢复"})
+        logs.intentTick(210,true);logs.intentTick(250,true);logs.intentTick(50,true)
+        assertEquals(1,logs.snapshot().count {it.reason=="手动意图刷新定时器延迟"})
+        assertEquals(1,logs.snapshot().count {it.reason=="手动意图刷新定时器恢复"})
         assertTrue(s.driving);assertFalse(stale.driving)
     }
 }

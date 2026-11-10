@@ -115,11 +115,11 @@ class DiagnosticRecorder {
                 packet("reasons" to JsonArray(reasons.map(::JsonPrimitive))))
         }
     }
-    fun sendTick(gapMillis:Long,active:Boolean) {
+    fun intentTick(gapMillis:Long,active:Boolean) {
         if(!active) {signatures.remove("send_delay");return}
         val delayed=gapMillis>=200
         if(delayed || signatures.containsKey("send_delay")) change("send_delay",delayed,LogSource.APP,
-            if(delayed) "手动发送定时器延迟" else "手动发送定时器恢复",
+            if(delayed) "手动意图刷新定时器延迟" else "手动意图刷新定时器恢复",
             packet("interval_ms" to gapMillis,"expected_ms" to 50))
     }
     private fun sanitize(input:JsonObject):JsonObject {
@@ -151,6 +151,9 @@ fun diagnosticReport(s:OperatorState,version:String):String=buildString {
 }
 
 val diagnosticReasons=mapOf(
+    "gui_input_expired" to "界面操作意图超过 250 ms 未刷新，已停用手动驾驶",
+    "telemetry_expired" to "后台发送器检测到遥测超过 800 ms，已停用手动驾驶",
+    "diagnostics_export" to "导出日志前停止手动输出",
     "input_timeout" to "网关接收手动输入超时", "app_disconnected" to "App 与网关连接断开",
     "text_input" to "输入框获得焦点，停止手动输出", "window_deactivated" to "窗口失去激活，停止手动输出",
     "window_closed" to "App 窗口关闭", "button" to "点击停止手动输出", "keyboard" to "按空格停止手动输出",

@@ -48,7 +48,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     private val runs=mapOf("rectangle" to Run(),"l" to Run())
     private val terminal=setOf("IDLE","PAUSED","STOPPED","CANCELLED","COMPLETE")
     private fun emit(p:JsonObject)=receive(p.toString())
-    override fun connect() {
+    @Synchronized override fun connect() {
         live=true; status(true,"模拟连接")
         emit(packet("type" to "hello","protocol" to "f1-operator-v1","client_id" to "demo",
             "session_id" to streamSession,
@@ -57,11 +57,16 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
         record("bridge","ACK progress timeout",packet("ctrl_age_sec" to .02,"ack_age_sec" to .35,"last_stop_reason" to "ACK progress timeout","example" to "模拟历史示例，非当前故障"))
         record("bridge","模拟桥已就绪",packet("state" to "READY","source" to "NANO","motion_authorized" to false))
         emitMap()
-        job=scope.launch { while(isActive && live) {
-            tick++; advance(); emit(telemetry())
-            if(tick%5==1) emitTracks()
-            emitDiagnostics()
-            if(mode=="mapping" && tick%20==0) {revision++;emitMap()}
+        job=scope.launch { while(isActive) {
+            // The manual sender is independent of Main. Publish one coherent
+            // mock tick and never race its input with the simulated robot state.
+            synchronized(this@DemoGateway) {
+                if(!live) return@launch
+                tick++; advance(); emit(telemetry())
+                if(tick%5==1) emitTracks()
+                emitDiagnostics()
+                if(mode=="mapping" && tick%20==0) {revision++;emitMap()}
+            }
             delay(100)
         } }
     }
@@ -92,7 +97,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
             Base64.getEncoder().encodeToString(result.toByteArray())
         } finally {encoder.end()}
     }
-    override fun send(value:JsonObject):Boolean {
+    @Synchronized override fun send(value:JsonObject):Boolean {
         if(!live) return false
         val op=value.str("op"); val action=value.str("action")
         if(op=="manual_input") {
@@ -117,12 +122,12 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                     boostPending=true
                     scope.launch {
                         delay(250)
-                        if(live) {
+                        synchronized(this@DemoGateway) { if(live) {
                             run.boost=value.flag("enabled");boostPending=false
                             emit(packet("type" to "reply","op" to "task","action" to action,"request_id" to value.str("request_id"),
                                 "success" to true,"message" to "模拟：主电机提速设置已确认"))
                             emit(telemetry())
-                        }
+                        } }
                     }
                 }
                 emit(telemetry());return true
@@ -257,5 +262,5 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
             "localization" to packet("fresh" to (mode=="localization"),"map_id" to mapId,"ready" to ready,"initial_pose_received" to (poseAt>0),"initial_pose_stamp_ns" to poseAt,"stable_elapsed_sec" to if(ready) 1 else 0,"stable_sec" to 1,"scan_fresh" to true,"pose_fresh" to true),
             "runtime" to packet("mode" to mode,"phase" to mode.uppercase(),"session_id" to "demo-$session","current_map" to if(mode=="localization") mapName else "","busy" to false,"scan_fresh" to true,"map_available" to (mode!="idle"),"pose_fresh" to (mode!="idle"),"last_operation" to lastOperation,"last_saved" to saved,"maps_directory" to "/demo/maps","message" to "模拟数据，仅验证界面流程"))
     }
-    override fun close() { live=false; job?.cancel() }
+    @Synchronized override fun close() { live=false; job?.cancel() }
 }

@@ -20,7 +20,6 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     val savedUrl get()=preferences.getString("url","ws://192.168.1.188:8765")!!
     private var connection:GatewayConnection?=null
     @Volatile private var generation=0
-    private var sequence=0L
     private var wanted=false
     private var retry:Job?=null
     private var url=savedUrl
@@ -29,6 +28,9 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     private var lastSendTick:Long?=null
     private var logExportSnapshot:String?=null
     private var previewRequestId:String?=null
+    private val manualSender=ManualSender(SystemClock::elapsedRealtime,{epoch,reason ->
+        viewModelScope.launch(Dispatchers.Main) { senderStopped(epoch,reason) }
+    })
     private val incoming=GatewayInbox(viewModelScope,SystemClock::elapsedRealtime,
         deliver={value -> if(value.epoch==generation) receive(value.packet,value.grid,value.receivedAt)},
         report={epoch,message,fatal -> viewModelScope.launch {
@@ -41,22 +43,45 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         viewModelScope.launch {
             while(isActive) {
                 delay(50)
+                applySenderExpiry()
                 val old=mutable.value
                 val tickAt=SystemClock.elapsedRealtime()
-                lastSendTick?.let {diagnostics.sendTick(tickAt-it,old.canDrive && old.manual.active)}
+                lastSendTick?.let {diagnostics.intentTick(tickAt-it,old.canDrive && old.manual.active)}
                 lastSendTick=tickAt
                 val next=StateReducer.tick(old,tickAt)
                 mutable.value=next
                 if(old.driving && !next.driving) {
-                    connection?.send(packet("op" to "manual_stop","reason" to "telemetry_or_permission_expired"))
+                    if(manualSender.clear("telemetry_or_permission_expired",sendStop=false))
+                        connection?.send(packet("op" to "manual_stop","reason" to "telemetry_or_permission_expired"))
                     log("控制状态已失效，手动已停用；恢复后需重新启用",reason="telemetry_or_permission_expired")
                 }
-                if(next.canDrive && next.manual.active) {
-                    if(connection?.send(next.manual.encode(++sequence))!=true) stopManual("send_not_ready")
-                }
+                refreshManualIntent()
                 diagnostics.observeApp(mutable.value)
                 syncLogs()
             }
+        }
+    }
+    private fun applySenderExpiry() {
+        if(manualSender.expired) senderStopped(generation,manualSender.stopReason)
+    }
+    private fun senderStopped(epoch:Int,reason:String) {
+        // A queued notification from a retired connection/arm must not cancel new input.
+        if(epoch!=generation || !manualSender.expired) return
+        val s=mutable.value
+        if(!s.driving && !s.manual.active) return
+        mutable.value=s.copy(driving=false,manual=s.manual.cleared())
+        log(when(reason) {
+            "gui_input_expired" -> "界面操作意图超过 250 ms 未刷新，手动已停用；需重新启用驾驶"
+            "telemetry_expired" -> "遥测超过 800 ms，手动已停用；需重新启用驾驶"
+            else -> "手动发送失败，已清除旧操作；请核对连接后重新启用驾驶"
+        },reason=reason)
+    }
+    private fun refreshManualIntent() {
+        val s=mutable.value
+        if(!s.canDrive) {manualSender.clear("control_gate_changed",sendStop=false);return}
+        if(!manualSender.update(generation,s.manual,s.receivedAt)) {
+            if(manualSender.expired) senderStopped(generation,manualSender.stopReason)
+            else stopManual("send_not_ready")
         }
     }
     private fun syncLogs() {
@@ -66,7 +91,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     fun clearLogs() {diagnostics.clear();syncLogs()}
     fun beginLogExport():Boolean {
         if(mutable.value.exportingLogs) return false
-        stopManual("export_log")
+        stopManual("diagnostics_export")
         logExportSnapshot=diagnosticReport(mutable.value,BuildConfig.VERSION_NAME)
         mutable.value=mutable.value.copy(exportingLogs=true)
         return true
@@ -100,6 +125,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     fun notice(message:String)=log(message)
     fun connect(address:String, demo:Boolean=false) {
         stopManual("switch_connection"); connection?.close(); retry?.cancel(); generation++
+        manualSender.reset(generation)
         wanted=true; url=address.trim()
         diagnostics.connection(if(demo) "模拟" else url)
         if(!demo) {
@@ -117,11 +143,13 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         if(!wanted || !mutable.value.foreground) return
         connection?.close()
         val epoch=++generation
+        manualSender.reset(epoch)
         incoming.reset(epoch);previewRequestId=null
         val packetCallback:(String)->Unit={raw ->
             incoming.offer(epoch,raw,SystemClock.elapsedRealtime())
         }
-        val statusCallback:(Boolean,String)->Unit={ok,message -> viewModelScope.launch {
+        // Always queue status reduction: a send failure may occur while transport locks are held.
+        val statusCallback:(Boolean,String)->Unit={ok,message -> viewModelScope.launch(Dispatchers.Main) {
             if(epoch==generation) {
                 if(ok) { mutable.value=mutable.value.copy(connection=message); log(message) }
                 else lost(message)
@@ -130,11 +158,13 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         try {
             connection=if(mutable.value.demo) DemoGateway(viewModelScope,packetCallback,statusCallback)
                        else RealGateway(url,packetCallback,statusCallback)
+            manualSender.bind(epoch,connection)
             connection?.connect()
         } catch(e:Exception) { lost(e.message ?: "连接失败") }
     }
     private fun lost(reason:String) {
         generation++ // Drop queued packets from the dead connection, including decoded maps.
+        manualSender.reset(generation)
         incoming.reset(generation);previewRequestId=null
         mutable.value=StateReducer.disconnected(mutable.value,reason).let { it.copy(pending=it.pending.filterValues {request->!request.readOnly}) }
         log("$reason；旧指令不会重发")
@@ -143,6 +173,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     }
     fun disconnect() {
         wanted=false; retry?.cancel(); stopManual("disconnect"); connection?.close(); generation++
+        manualSender.reset(generation)
         incoming.reset(generation);previewRequestId=null
         mutable.value=StateReducer.disconnected(mutable.value,"已断开")
     }
@@ -163,15 +194,25 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         if(s.canSelectTask && value in setOf("rectangle","l")) mutable.value=s.copy(taskKind=value,candidate=null)
     }
     fun armManual() {
-        val s=mutable.value
-        if(s.manualAllowed) { mutable.value=s.copy(driving=true,manual=s.manual.cleared()); log("手动已使能；按住方向键运行，松开仅停止主驱动") }
+        val s=StateReducer.tick(mutable.value,SystemClock.elapsedRealtime())
+        mutable.value=s.copy(driving=false,manual=s.manual.cleared())
+        if(s.manualAllowed && manualSender.arm(generation)) {
+            mutable.value=mutable.value.copy(driving=true)
+            refreshManualIntent()
+            log("手动已使能；按住方向键运行，松开仅停止主驱动")
+        }
     }
     fun manual(intent:ManualIntent) {
-        val s=mutable.value
-        if(!s.canDrive) return
+        val s=StateReducer.tick(mutable.value,SystemClock.elapsedRealtime())
+        if(!s.canDrive) {
+            stopManual("telemetry_or_permission_expired")
+            mutable.value=mutable.value.copy(now=s.now)
+            return
+        }
+        mutable.value=s
         val m=if(!s.telemetry.obj("state").flag("allow_fifth_thruster")) intent.copy(thrust=false) else intent
         mutable.value=s.copy(manual=m)
-        if(connection?.send(m.encode(++sequence))!=true) stopManual("send_not_ready")
+        refreshManualIntent()
     }
     fun direction(value:String)=manual(mutable.value.manual.copy(direction=value))
     fun stopManual(reason:String="operator") {
@@ -179,6 +220,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         // send() may synchronously report a failure and reduce disconnected state.
         // Clear intent first so that callback cannot be overwritten by this snapshot.
         mutable.value=s.copy(driving=false,manual=s.manual.cleared())
+        manualSender.clear(reason,sendStop=false)
         // An observing client must not seize the gateway with an unsolicited STOP.
         if(s.driving || s.manual.active) {
             val sent=connection?.send(packet("op" to "manual_stop","reason" to reason))==true
@@ -190,6 +232,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     fun explicitStop() {
         val s=mutable.value
         mutable.value=s.copy(driving=false,manual=s.manual.cleared())
+        manualSender.clear("operator",sendStop=false)
         val sent=s.operator && connection?.send(packet("op" to "manual_stop","reason" to "operator"))==true
         log(if(sent) "已请求停止手动输出；自动任务需使用停止任务"
             else "停止请求未发送：连接不可用或无操作权限；请核对机器人状态",reason="operator",details=packet("stop_sent" to sent))
@@ -253,12 +296,15 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     }
     fun closePreview() { previewRequestId=null;mutable.value=mutable.value.copy(preview=null) }
     private fun receive(p:JsonObject,grid:GridMap?,receivedAt:Long) {
+        applySenderExpiry()
         val s=mutable.value
         when(p.str("type")) {
             "hello" -> {
                 if(p.str("protocol")!="f1-operator-v1") { wanted=false; connection?.close(); lost("网关协议不兼容"); return }
                 val n=StateReducer.hello(s,p)
                 if(n===s) return
+                manualSender.clear("gateway_hello",sendStop=false)
+                if(!manualSender.activate(generation)) return
                 mutable.value=n.copy(connection=if(s.demo) "模拟模式 · 不连接硬件" else "已连接")
                 log(if(s.demo) "模拟网关已就绪，不连接硬件" else "握手成功，等待新遥测")
                 if("diagnostic_history" !in mutable.value.capabilities)
@@ -271,7 +317,8 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                 val n=StateReducer.tracks(s,p)
                 mutable.value=n
                 if(s.driving && !n.driving) {
-                    connection?.send(packet("op" to "manual_stop","reason" to "control_gate_changed"))
+                    if(manualSender.clear("control_gate_changed",sendStop=false))
+                        connection?.send(packet("op" to "manual_stop","reason" to "control_gate_changed"))
                     log("网关会话变化，手动已停用",reason="control_gate_changed")
                 }
             }
@@ -290,9 +337,13 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                 if(s.manual.thrust && !n.manual.thrust && !n.telemetry.obj("state").flag("allow_fifth_thruster"))
                     log("机器人撤销第五电推许可，已清除开关；许可恢复后需重新开启")
                 if(s.driving && !n.driving) {
-                    connection?.send(packet("op" to "manual_stop","reason" to "control_gate_changed"))
+                    if(manualSender.clear("control_gate_changed",sendStop=false))
+                        connection?.send(packet("op" to "manual_stop","reason" to "control_gate_changed"))
                     log("控制条件变化，手动已停用",reason="control_gate_changed")
                 }
+                // Replace revoked auxiliary permissions/expiry deadlines immediately.
+                // This is still a GUI heartbeat; receive threads never renew intent.
+                refreshManualIntent()
                 val saved=n.runtime.obj("last_saved")
                 if(saved.isNotEmpty() && saved!=s.runtime.obj("last_saved")) {
                     mutable.value=mutable.value.copy(selectedMap=saved.str("name"))
@@ -325,5 +376,5 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
             "error" -> { stopManual("gateway_error"); log("网关错误：${p.str("message")}",LogSource.GATEWAY) }
         }
     }
-    override fun onCleared() { wanted=false; stopManual("app_closed"); connection?.close(); incoming.close() }
+    override fun onCleared() { wanted=false; stopManual("app_closed"); manualSender.close(); connection?.close(); incoming.close() }
 }
