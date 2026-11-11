@@ -24,6 +24,7 @@ val OperatorState.forwardBoostStatus:String get() {
     if(!forwardBoostSupported) return "提速功能需要新版 Nano 网关和清洗控制器。"
     val enabled=forwardBoostEnabled ?: return "提速状态未确认，不能修改。"
     if(!enabled) return "提速已关闭，沿墙前进依靠滚刷。"
+    if(taskPaused && taskResumeSupported) return "已启用，暂停期间无任务输出；人工暂停继续后沿用此设置。"
     if(task.strictBoolean("forward_boost_active")==true) return when {
         demo->"模拟：前进辅助指令有效，不驱动硬件。"
         task.strictBoolean("output_enabled")==true->"前进辅助指令有效，不代表实测推力。"

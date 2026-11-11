@@ -82,7 +82,7 @@ private val Background=Color(0xFFF1F5F7)
             Text(if(s.demo) "模拟模式 · 不连接硬件" else s.connection,color=if(s.fresh) Color(0xFF89E4CB) else Color(0xFFF2CE8A),fontSize=12.sp)
         }
         if(s.connected) Text(if(!s.fresh) "数据过期" else if(!s.operator) "其他端控制" else if(s.driving) "手动驾驶" else "观察 / 待操作",color=Color.White,fontSize=13.sp)
-        if(s.busy || s.canTaskAction("stop")) Button(onClick={vm.task("stop")},enabled=s.canTaskAction("stop"),colors=ButtonDefaults.buttonColors(containerColor=Danger),shape=RoundedCornerShape(12.dp)) {Text("停止任务")}
+        if(!s.taskResumeSupported && (s.busy || s.canTaskAction("stop"))) Button(onClick={vm.task("stop")},enabled=s.canTaskAction("stop"),colors=ButtonDefaults.buttonColors(containerColor=Danger),shape=RoundedCornerShape(12.dp)) {Text("停止任务")}
         Button(onClick=vm::explicitStop,enabled=s.operator,colors=ButtonDefaults.buttonColors(containerColor=Danger),shape=RoundedCornerShape(12.dp),contentPadding=PaddingValues(14.dp,12.dp)) {Text("停止手动输出")}
     }
 }
@@ -154,18 +154,22 @@ private val Background=Color(0xFFF1F5F7)
         Action("发布初始位姿",s.canPose && s.candidate!=null,onClick=vm::publishPose)
     }
     HorizontalDivider()
-    Text(if(s.fresh && task.flag("fresh")) phaseLabels[task.str("phase")] ?: task.str("phase","等待任务状态") else "任务状态未知",style=MaterialTheme.typography.titleLarge,color=Teal)
+    Text(s.taskPhaseLabel,style=MaterialTheme.typography.titleLarge,color=Teal)
     Text(if(s.demo) "模拟，不驱动硬件" else if(s.fresh && task.flag("fresh")) {if(task.flag("output_enabled")) "实际输出模式" else "预览模式，不驱动硬件"} else "输出模式未确认",color=Muted)
-    Info(s.startConditionText,!s.canStart)
-    if(s.fresh && loc.flag("fresh") && loc.flag("ready") && task.flag("fresh") && !task.flag("can_start"))
+    Info(if(s.taskPaused) s.resumeConditionText else s.startConditionText,if(s.taskPaused) !s.canResumeTask else !s.canStart)
+    if(!s.taskPaused && s.fresh && loc.flag("fresh") && loc.flag("ready") && task.flag("fresh") && !task.flag("can_start"))
         Text("定位就绪与任务启动检查分别判断；请按所选任务的原始原因排查。",style=MaterialTheme.typography.bodySmall,color=Muted)
     Action("开始新任务",s.canStart){vm.task("start")}
-    Action("停止任务",s.canTaskAction("stop"),true){vm.task("stop")}
+    if(!s.taskResumeSupported) Action("停止任务",s.canTaskAction("stop"),true){vm.task("stop")}
+    val pauseAction=if(s.taskPaused) "resume" else "pause"
     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-        OutlinedButton({vm.task("pause")},enabled=s.canTaskAction("pause"),modifier=Modifier.weight(1f)){Text("暂停")}
-        OutlinedButton({vm.task("cancel")},enabled=s.canTaskAction("cancel"),modifier=Modifier.weight(1f)){Text("取消任务")}
+        OutlinedButton({vm.task(pauseAction)},enabled=s.canTaskAction(pauseAction),modifier=Modifier.weight(1f)){Text(if(s.taskPaused) "继续任务" else "暂停任务")}
+        Button({vm.task("cancel")},enabled=s.canTaskAction("cancel"),colors=ButtonDefaults.buttonColors(containerColor=Danger),modifier=Modifier.weight(1f)){Text("取消任务")}
     }
-    Text("暂停后需取消再开始，不支持断点继续。停止请求成功不代表船体惯性漂移已结束。",style=MaterialTheme.typography.bodySmall,color=Muted)
+    if(s.taskPaused && s.taskResumeSupported && task.str("paused_phase").isNotBlank())
+        Text("暂停前阶段：${phaseLabels[task.str("paused_phase")] ?: task.str("paused_phase")}",style=MaterialTheme.typography.bodySmall,color=Muted)
+    Text(if(s.taskResumeSupported) "人工暂停关闭任务输出并保留进度，仍占用任务；条件满足后可继续。故障停机需取消并排障。取消结束原任务；顶部红色按钮仅停止手动输出。暂停不代表船体已物理停稳。"
+        else "当前网关不支持断点继续，暂停后需取消再开始。停止请求成功不代表船体惯性漂移已结束。",style=MaterialTheme.typography.bodySmall,color=Muted)
     if(task.str("run_id").isNotBlank()) Text("任务 ${task.str("run_id")}\n起始墙 ${task.str("start_edge_id","—")} · 当前墙 ${task.str("current_edge_id","—")}",color=Muted)
     if(task.str("reason").isNotBlank()) Text(task.str("reason"),color=Muted)
     if(task.flag("returning_to_start")) Info("正在补齐起始边前段")
@@ -265,24 +269,37 @@ private val Background=Color(0xFFF1F5F7)
     Text("保存位置：${s.runtime.str("maps_directory","Nano 工作空间 maps/")}\n保存失败会保留建图；可到地图库重试导出。",style=MaterialTheme.typography.bodySmall,color=Muted)
     if(confirm) AlertDialog(onDismissRequest={confirm=false},title={Text("放弃本次建图？")},text={Text("未保存的内容将丢失，此前保存的地图会保留。")},confirmButton={TextButton({confirm=false;vm.mapping("discard",confirmed=true)}){Text("放弃",color=Danger)}},dismissButton={TextButton({confirm=false}){Text("返回")}})
 }
-@Composable private fun MapsPage(s:OperatorState,vm:OperatorViewModel) {
+@Composable internal fun MapsPage(s:OperatorState,vm:OperatorViewModel) {
     Title("地图库","预览与加载分开，加载后需重新设置初始位姿")
     Text("当前地图：${s.runtime.str("current_map","未加载").ifBlank {"未加载"}}",color=Teal)
     Action("刷新列表",s.canMapping("list")){vm.mapping("list")}
     if(s.catalog.isEmpty()) Info("尚无地图列表，请连接受管网关后刷新。")
     s.catalog.forEach {entry->
         val name=entry.str("name")
-        Surface(Modifier.fillMaxWidth().clickable(enabled=s.pending.isEmpty()){vm.selectMap(name)},shape=RoundedCornerShape(12.dp),color=if(s.selectedMap==name) Color(0xFFDDF1F0) else Background) {
+        val selected=entry.mapSelection==s.mapSelection
+        Surface(Modifier.fillMaxWidth().clickable(enabled=s.pending.isEmpty()){vm.selectMap(name,entry.str("snapshot_id"))},shape=RoundedCornerShape(12.dp),color=if(selected) Color(0xFFDDF1F0) else Background) {
             Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically) {
-                RadioButton(s.selectedMap==name,{vm.selectMap(name)},enabled=s.pending.isEmpty())
-                Column {Text(name,fontWeight=FontWeight.SemiBold);Text(if(entry.flag("valid")) "文件完整 · ${entry.str("saved_at")}" else if(entry.flag("recoverable")) "待导出 · ${entry.str("reason")}" else "不可用 · ${entry.str("reason")}",style=MaterialTheme.typography.bodySmall,color=Muted)}
+                RadioButton(selected,{vm.selectMap(name,entry.str("snapshot_id"))},enabled=s.pending.isEmpty())
+                Column {Text(name,fontWeight=FontWeight.SemiBold);Text(if(entry.flag("valid")) "文件完整 · ${entry.str("saved_at")}" else if(entry.flag("recoverable")) "待导出 · ${entry.str("reason")}" else "不可用 · ${entry.str("reason")}",style=MaterialTheme.typography.bodySmall,color=Muted)
+                    if(entry.str("snapshot_id").isNotBlank()) Text("快照 ${entry.str("snapshot_id")}",style=MaterialTheme.typography.bodySmall,color=Muted)}
             }
         }
     }
     Action("预览所选地图",s.canMapping("preview")){vm.mapping("preview")}
     Action("加载所选地图",s.canMapping("load")){vm.mapping("load")}
     OutlinedButton({vm.mapping("retry_export")},enabled=s.canMapping("retry_export"),modifier=Modifier.fillMaxWidth()){Text("重试快照导出")}
-    Info("建图和固定地图定位互斥。地图保存成功不代表适用于全部清洗任务。")
+    Action("卸载当前地图／返回待机",s.canMapping("unload")){vm.mapping("unload")}
+    Action("删除所选地图",s.canMapping("delete"),true,onClick=vm::requestMapDeletion)
+    s.mapDeleteBlockReason?.let {Text(it,style=MaterialTheme.typography.bodySmall,color=Muted)}
+    if("map_unload" !in s.capabilities) Text("卸载功能需要新版受管网关。",style=MaterialTheme.typography.bodySmall,color=Muted)
+    Info("卸载会结束当前地图定位并清空地图、位姿与轨迹，保留地图文件。删除会移除机器人上的所选地图文件或指定快照。清洗运行、暂停或操作待确认时不能卸载或删除。")
+    s.deleteTarget?.let {target ->
+        AlertDialog(onDismissRequest=vm::dismissMapDeletion,title={Text("删除所选地图？")},
+            text={Text(if(target.snapshotId.isEmpty()) "确认删除“${target.name}”及其机器人端地图文件？此操作无法在 App 中撤销。"
+                else "确认删除“${target.name}”的待导出快照？\n快照 ${target.snapshotId}\n仅删除此快照，不删除同名已发布地图。")},
+            confirmButton={TextButton(vm::confirmMapDeletion,enabled=s.canConfirmMapDeletion){Text("确认删除",color=Danger)}},
+            dismissButton={TextButton(vm::dismissMapDeletion){Text("返回")}})
+    }
 }
 @Composable private fun Settings(s:OperatorState,vm:OperatorViewModel) {
     var url by remember {mutableStateOf(vm.savedUrl)}

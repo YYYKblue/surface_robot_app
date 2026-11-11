@@ -40,13 +40,19 @@ class DemoWorkflowTest {
             assertEquals(false,vm.state.value.forwardBoostEnabled)
             until("rectangle boost confirmed") {vm.state.value.canSetForwardBoost && vm.state.value.forwardBoostEnabled==true}
             vm.task("start")
-            until("rectangle running") {vm.state.value.busy && vm.state.value.pending.isEmpty()}
+            until("rectangle running") {vm.state.value.canTaskAction("pause")}
             assertFalse(vm.state.value.canStart)
             assertFalse(vm.state.value.canSetForwardBoost)
             vm.task("pause")
             until("paused") {vm.state.value.fresh && vm.state.value.task.str("phase")=="PAUSED"}
             assertFalse(vm.state.value.canStart)
             assertFalse(vm.state.value.canSetForwardBoost)
+            val pausedRun=vm.state.value.task.str("run_id")
+            assertTrue(vm.state.value.canResumeTask)
+            vm.task("resume")
+            until("resumed original task") {vm.state.value.fresh && vm.state.value.pending.isEmpty() && vm.state.value.task.long("resume_sequence")==1L}
+            assertEquals(pausedRun,vm.state.value.task.str("run_id"))
+            assertEquals(true,vm.state.value.forwardBoostEnabled)
             vm.task("cancel")
             until("cancelled") {vm.state.value.canSelectTask}
             vm.taskKind("l")
@@ -56,7 +62,7 @@ class DemoWorkflowTest {
             vm.task("start")
             until("L running") {vm.state.value.busy && vm.state.value.pending.isEmpty()}
             vm.task("stop")
-            until("L stopped") {vm.state.value.fresh && vm.state.value.task.str("phase")=="STOPPED"}
+            until("L stop alias cancelled") {vm.state.value.fresh && vm.state.value.task.str("phase")=="CANCELLED"}
             vm.page(Page.MAPPING);vm.mapping("start")
             until("mapping") {vm.state.value.canMapping("save")}
             vm.mapping("save","流程测试")
@@ -74,8 +80,19 @@ class DemoWorkflowTest {
             assertFalse(vm.state.value.canStart)
             assertEquals(false,vm.state.value.forwardBoostEnabled)
             assertFalse(vm.state.value.telemetry.obj("tasks").obj("rectangle").flag("forward_boost_enabled"))
-            vm.selectMap("导出失败示例");vm.mapping("retry_export")
+            vm.selectMap("导出失败示例","0123456789abcdef0123456789abcdef");vm.mapping("retry_export")
             until("recovered") {vm.state.value.selectedEntry.flag("valid") && vm.state.value.pending.isEmpty()}
+            vm.selectMap("演示开放墙链")
+            assertFalse(vm.state.value.canMapping("delete"))
+            vm.mapping("unload")
+            until("unloaded") {vm.state.value.fresh && vm.state.value.runtime.str("mode")=="idle" && vm.state.value.pending.isEmpty()}
+            assertNull(vm.state.value.map);assertTrue(vm.state.value.stream.tracks.isEmpty())
+            vm.requestMapDeletion()
+            assertNotNull(vm.state.value.deleteTarget)
+            vm.dismissMapDeletion()
+            assertTrue(vm.state.value.catalog.any {it.str("name")=="演示开放墙链"})
+            vm.requestMapDeletion();vm.confirmMapDeletion()
+            until("deleted and list refreshed") {vm.state.value.fresh && vm.state.value.pending.isEmpty() && vm.state.value.catalog.none {it.str("name")=="演示开放墙链"}}
             assertTrue(vm.state.value.demo)
             val exported=java.io.File(controller.get().cacheDir,"diagnostic-export-test.txt")
             assertTrue(vm.beginLogExport())

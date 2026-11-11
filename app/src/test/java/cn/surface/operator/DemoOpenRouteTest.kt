@@ -16,6 +16,39 @@ import java.time.Duration
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34])
 class DemoOpenRouteTest {
+    @Test fun pauseKeepsRunAndElapsedProgressAndBreaksRecordedTrackOnResume() {
+        for(kind in listOf("rectangle","l")) {
+            val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
+            var task=EMPTY
+            var track=EMPTY
+            val gateway=DemoGateway(scope,{raw ->
+                val p=wireJson.parseToJsonElement(raw) as JsonObject
+                if(p.str("type")=="telemetry") task=p.obj("tasks").obj(kind)
+                if(p.str("type")=="tracks") track=p.obj("tasks").obj(kind)
+            },{_,_->})
+            fun action(value:String)=gateway.send(packet("op" to "task","task_type" to kind,"action" to value,
+                "request_id" to value,"run_id" to task.str("run_id")))
+            try {
+                gateway.connect()
+                gateway.send(packet("op" to "initial_pose","x" to 1,"y" to 1,"yaw" to 0,"request_id" to "pose"))
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1100))
+                action("start")
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(4500))
+                val run=task.str("run_id");val edge=task.str("current_edge_id");val phase=task.str("phase")
+                action("pause")
+                val count=track.long("point_count")
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
+                assertEquals("PAUSED",task.str("phase"));assertEquals(count,track.long("point_count"))
+                assertTrue(task.flag("can_resume"));assertEquals("user",task.str("pause_kind"))
+                action("resume")
+                assertEquals(run,task.str("run_id"));assertEquals(edge,task.str("current_edge_id"))
+                assertEquals(phase,task.str("phase"));assertEquals(1L,task.long("resume_sequence"))
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+                assertTrue(track.long("point_count")>count);assertEquals(2,track.arr("segments").size)
+                action("cancel");assertFalse(task.flag("can_resume"))
+            } finally {gateway.close();scope.cancel()}
+        }
+    }
     @Test fun fiveEdgesReplayLeftAndRightTransfersThenCompleteWithCoverageGap() {
         val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
         val tasks=mutableListOf<JsonObject>()

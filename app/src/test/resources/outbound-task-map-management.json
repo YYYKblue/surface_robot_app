@@ -1,0 +1,7 @@
+[
+  {"op":"task","action":"resume","task_type":"rectangle","request_id":"resume-rectangle","run_id":"original-rectangle"},
+  {"op":"task","action":"resume","task_type":"l","request_id":"resume-open","run_id":"original-open"},
+  {"op":"mapping","action":"delete","request_id":"delete-map","name":"一号池","snapshot_id":"","confirm":true},
+  {"op":"mapping","action":"delete","request_id":"delete-snapshot","name":"待导出地图","snapshot_id":"0123456789abcdef0123456789abcdef","confirm":true},
+  {"op":"mapping","action":"unload","request_id":"unload-map"}
+]

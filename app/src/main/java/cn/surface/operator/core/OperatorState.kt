@@ -6,7 +6,7 @@ enum class Page(val title: String, val symbol: String) {
     TASK("清洗作业","◈"), MANUAL("手动驾驶","✥"), MAPPING("建图","▧"), MAPS("地图库","▦"), DIAGNOSTICS("诊断","≋"), SETTINGS("连接设置","⚙")
 }
 data class Pending(val id: String, val command: JsonObject, val sentAt: Long,
-                   val oldRun: String="", val oldPoseStamp: Long=0) {
+                   val oldRun: String="", val oldPoseStamp: Long=0, val oldResumeSequence:Long=-1) {
     val action get()=command.str("action")
     val readOnly get()=command.str("op")=="mapping" && action in setOf("list","preview")
 }
@@ -21,6 +21,7 @@ data class OperatorState(
     val foreground: Boolean=true, val picking: Boolean=false, val candidate: Pose?=null,
     val pending: Map<String,Pending> = emptyMap(), val catalog: List<JsonObject> = emptyList(),
     val selectedMap: String="", val message: String="请连接机器人，或进入模拟模式", val logs: List<DiagnosticEntry> = emptyList(),
+    val selectedSnapshotId:String="", val deleteTarget:MapSelection?=null,
     val exportingLogs:Boolean=false,
     val stream:StreamState=StreamState()
 ) {
@@ -37,7 +38,8 @@ data class OperatorState(
     }
     val localization get()=telemetry.obj("localization")
     val operator get()=fresh && clientId.isNotEmpty() && telemetry.str("active_client").let { it.isEmpty() || it==clientId }
-    val busy get()=telemetry.flag("task_busy") || telemetry.flag("operation_pending") || runtime.flag("busy")
+    val busy get()=telemetry.flag("task_busy") || telemetry.flag("operation_pending") || runtime.flag("busy") ||
+        runtime.obj("operation").isNotEmpty() || taskResumeSupported && telemetry.obj("tasks").values.any {(it as? JsonObject)?.str("phase")=="PAUSED"}
     val taskSupported get()=capabilities.containsAll(setOf("task_selection","initial_pose","start_conditions"))
     val mappingSupported get()=capabilities.containsAll(setOf("mapping","map_catalog"))
     val manualAllowed get()=operator && foreground && page==Page.MANUAL && !picking && preview==null && !busy && pending.isEmpty() &&
@@ -47,17 +49,21 @@ data class OperatorState(
     val canPose get()=operator && foreground && taskSupported && !busy && pending.isEmpty() && mapMatchesRuntime && map?.frame=="map" && map.revision>0 && telemetry.flag("can_set_initial_pose")
     val canStart get()=operator && foreground && taskSupported && !busy && pending.isEmpty() && !picking && mapMatchesRuntime && task.flag("fresh") && task.flag("can_start")
     fun canTaskAction(action: String): Boolean {
-        if(action !in setOf("start","pause","stop","cancel")) return false
+        if(action !in setOf("start","pause","resume","stop","cancel")) return false
         if(action=="start") return canStart
+        if(action=="resume") return canResumeTask
         if(!operator || !foreground || !taskSupported) return false
         if(action=="stop" && "task_stop" !in capabilities) return false
         if(pending.values.any { it.command.str("op")=="task" && it.action in setOf("pause","stop","cancel") && now-it.sentAt<5000 }) return false
         val active=telemetry.arr("active_tasks").any { (it as? JsonPrimitive)?.content==taskKind }
-        val starting=pending.values.any { it.command.str("op")=="task" && it.action=="start" && it.command.str("task_type")==taskKind }
+        val starting=pending.values.any { it.command.str("op")=="task" && it.action in setOf("start","resume") && it.command.str("task_type")==taskKind }
         val known=task.flag("fresh") && task.str("phase")=="PAUSED"
+        if(action=="pause" && taskResumeSupported)
+            return pending.isEmpty() && active && task.flag("fresh") && task.str("phase") !in setOf("IDLE","CANCELLED","STOPPED","COMPLETE","PAUSED","ACQUIRING")
+        if(action=="cancel" && taskResumeSupported) return active || starting || known
         return active || starting || known || (action=="cancel" && task.flag("fresh") && task.str("run_id").isNotEmpty() && task.str("phase") !in setOf("IDLE","CANCELLED"))
     }
-    val selectedEntry get()=catalog.find { it.str("name")==selectedMap } ?: EMPTY
+    val selectedEntry get()=catalog.singleOrNull { it.mapSelection==mapSelection } ?: EMPTY
     fun canMapping(action: String): Boolean {
         if(!fresh || !foreground || !mappingSupported || pending.isNotEmpty()) return false
         val read=action in setOf("list","preview")
@@ -71,6 +77,8 @@ data class OperatorState(
             "load" -> mode!="mapping" && selectedEntry.flag("valid")
             "preview" -> selectedEntry.flag("valid")
             "retry_export" -> selectedEntry.flag("recoverable")
+            "delete" -> mapDeleteBlockReason==null
+            "unload" -> "map_unload" in capabilities && mode in setOf("localization","error")
             "list" -> true
             else -> false
         }
@@ -85,10 +93,11 @@ data class OperatorState(
 /** Called only on the UI dispatcher; all decisions also run when an action is submitted. */
 object StateReducer {
     fun disconnected(s: OperatorState, reason: String)=s.copy(connected=false,connection=reason,
-        clientId="",capabilities=emptySet(),receivedAt=-1,driving=false,manual=s.manual.cleared(),picking=false,candidate=null)
+        clientId="",capabilities=emptySet(),receivedAt=-1,driving=false,manual=s.manual.cleared(),picking=false,candidate=null,
+        deleteTarget=null,preview=null,previewName="")
     fun hello(s:OperatorState,p:JsonObject):OperatorState {
         val next=StreamReducer.hello(s,p)
-        return if(next===s) s else next.copy(restoreTaskSelection=true,
+        return if(next===s) s else next.copy(restoreTaskSelection=true,deleteTarget=null,preview=null,previewName="",
             manual=next.manual.copy(speed=next.normalizedManualSpeed()))
     }
     fun tracks(s:OperatorState,p:JsonObject):OperatorState=StreamReducer.tracks(s,p)
@@ -108,7 +117,9 @@ object StateReducer {
                 "initial_pose" -> p.obj("localization").flag("fresh") && p.obj("localization").long("initial_pose_stamp_ns")>request.oldPoseStamp
                 "task" -> t.flag("fresh") && when(request.action) {
                     "start" -> t.str("run_id").isNotEmpty() && t.str("run_id")!=request.oldRun
-                    "stop" -> t.str("phase")=="STOPPED"
+                    "resume" -> request.oldResumeSequence>=0 && t.str("run_id")==request.oldRun &&
+                        (t.resumeSequence ?: -1)>request.oldResumeSequence
+                    "stop" -> t.str("phase")=="STOPPED" || s.taskResumeSupported && t.str("phase")=="CANCELLED"
                     "pause" -> t.str("phase")=="PAUSED"
                     "cancel" -> t.str("phase")=="CANCELLED"
                     else -> false
@@ -118,6 +129,9 @@ object StateReducer {
             !confirmed
         }
         var next=s.copy(telemetry=p,now=now,pending=remaining)
+        if(changed) next=next.copy(deleteTarget=null,preview=null,previewName="")
+        if(p.obj("runtime").str("mode")=="idle" && !p.obj("runtime").flag("map_available"))
+            next=next.copy(stream=next.stream.copy(tracks=emptyMap()))
         // A ready Nano can already belong to a new F103 control epoch. Never
         // carry the previous hold across RC takeover or serial reconnection.
         if(s.manualControlIdentity!=null && s.manualControlIdentity!=next.manualControlIdentity)
@@ -171,4 +185,4 @@ val phaseLabels=mapOf("IDLE" to "待启动","ACQUIRING" to "获取控制权","AL
     "LEFT_SHIFT_TO_ENTRY" to "左转换边：左移至下一墙入口",
     "TURN_LEFT_TO_NEXT_EDGE" to "左转换边：左转对齐下一墙",
     "APPROACH_EDGE" to "接近清洗边","APPROACH_WALL" to "靠墙","COMPLETE" to "本次路线执行完成",
-    "PAUSED" to "已暂停 · 取消后重新开始","STOPPED" to "任务已停止","CANCELLED" to "任务已取消")
+    "PAUSED" to "已暂停","STOPPED" to "任务已停止","CANCELLED" to "任务已取消")

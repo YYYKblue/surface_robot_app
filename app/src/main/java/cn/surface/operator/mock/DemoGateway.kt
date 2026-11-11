@@ -41,9 +41,10 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     }
     private val catalog=mutableListOf(packet("name" to mapName,"valid" to true,"saved_at" to "模拟数据"),
         packet("name" to "演示开放墙链","valid" to true,"saved_at" to "模拟数据"),
-        packet("name" to "导出失败示例","valid" to false,"recoverable" to true,"reason" to "模拟栅格导出失败，可重试"))
+        packet("name" to "导出失败示例","valid" to false,"recoverable" to true,"snapshot_id" to "0123456789abcdef0123456789abcdef","reason" to "模拟栅格导出失败，可重试"))
     private data class Run(var phase:String="IDLE",var id:String="",var begin:Int=0,var edge:Int=0,
-        var boost:Boolean=false,var cutoff:Boolean=false,val points:MutableList<Point> = mutableListOf())
+        var boost:Boolean=false,var cutoff:Boolean=false,val points:MutableList<Point> = mutableListOf(),
+        var pausedPhase:String="",var pausedAt:Int=0,var resumeSequence:Int=0,val breaks:MutableList<Int> = mutableListOf())
     // Synthetic UI playback, not a model of vessel dynamics or turn clearance.
     private val demoEdges=mapOf("l" to DemoGeometry.edges("l"),"rectangle" to DemoGeometry.edges("rectangle"))
     private val runs=mapOf("rectangle" to Run(),"l" to Run())
@@ -53,7 +54,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
         live=true; status(true,"模拟连接")
         emit(packet("type" to "hello","protocol" to "f1-operator-v1","client_id" to "demo",
             "session_id" to streamSession,"drive_output" to driveOutput,
-            "capabilities" to JsonArray(listOf("task_selection","initial_pose","start_conditions","task_stop","task_tracks","mapping","map_catalog","diagnostic_history","forward_boost",CONTINUOUS_DRIVE_CAPABILITY).map(::JsonPrimitive))))
+            "capabilities" to JsonArray(listOf("task_selection","initial_pose","start_conditions","task_stop","task_resume","task_tracks","mapping","map_catalog","map_delete","map_unload","diagnostic_history","forward_boost",CONTINUOUS_DRIVE_CAPABILITY).map(::JsonPrimitive))))
         record("gateway","input_timeout",packet("input_age_ms" to 310,"input_timeout_ms" to 250,"had_lease" to true,"example" to "模拟历史示例，非当前故障"))
         record("bridge","ACK progress timeout",packet("ctrl_age_sec" to .02,"ack_age_sec" to .35,"last_stop_reason" to "ACK progress timeout","example" to "模拟历史示例，非当前故障"))
         record("bridge","模拟桥已就绪",packet("state" to "READY","source" to "NANO","motion_authorized" to false))
@@ -81,7 +82,8 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     }
     private fun emitTracks()=emit(packet("type" to "tracks","session_id" to streamSession,"tasks" to buildJsonObject {
         if(mode=="localization") runs.forEach { (kind,r) -> put(kind,packet("frame_id" to "map","map_id" to "demo/$mapName","run_id" to r.id,
-            "segments" to JsonArray(listOf(points(r.points))),"point_count" to r.points.size,"truncated" to false)) }
+            "segments" to JsonArray((listOf(0)+r.breaks+r.points.size).distinct().zipWithNext().map {(a,b)->points(r.points.subList(a,b))}),
+            "point_count" to r.points.size,"truncated" to false)) }
     }))
     private fun grid(name:String=mapName):JsonObject=packet("frame_id" to "map","revision" to revision,"width" to 160,"height" to 100,
         "resolution" to 0.05,"origin" to packet("x" to 0,"y" to 0,"yaw" to 0),
@@ -137,11 +139,16 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
             when(action) {
                 "start" -> {
                     if(tick<readyAt || boostPending || runs.values.any { it.phase !in terminal || it.phase=="PAUSED" }) { success=false; message="定位未就绪、任务运行中或操作待确认" }
-                    else { run.phase="ACQUIRING"; run.id="demo-${tick}"; run.begin=tick; run.edge=0; run.cutoff=false; run.points.clear() }
+                    else { run.phase="ACQUIRING"; run.id="demo-${tick}"; run.begin=tick; run.edge=0; run.cutoff=false; run.points.clear()
+                        run.pausedPhase="";run.resumeSequence=0;run.breaks.clear() }
                 }
-                "pause" -> run.phase="PAUSED"
-                "stop" -> run.phase="STOPPED"
-                "cancel" -> run.phase="CANCELLED"
+                "pause" -> if(run.phase !in terminal && run.phase!="ACQUIRING") {
+                    run.pausedPhase=run.phase;run.pausedAt=tick;run.phase="PAUSED";run.breaks.add(run.points.size)
+                } else {success=false;message="模拟：当前任务不能人工暂停"}
+                "resume" -> if(run.phase=="PAUSED" && run.pausedPhase.isNotEmpty() && value.str("run_id")==run.id && tick>=readyAt) {
+                    run.begin+=tick-run.pausedAt;run.phase=run.pausedPhase;run.pausedPhase="";run.resumeSequence++
+                } else {success=false;message="模拟：没有可继续的原任务"}
+                "stop","cancel" -> {run.phase="CANCELLED";run.pausedPhase=""}
             }
         } else if(op=="initial_pose") {
             owner="demo"; x=value.num("x"); y=value.num("y"); yaw=value.num("yaw")
@@ -150,13 +157,26 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
             when(action) {
                 "list" -> extra=packet("maps" to JsonArray(catalog),"maps_directory" to "/demo/maps")
                 "preview" -> extra=packet("preview" to grid(value.str("name")),"name" to value.str("name"))
-                "load","start","discard" -> {
+                "load","start","discard","unload" -> {
                     owner="demo"; session++; revision++; readyAt=Int.MAX_VALUE; poseAt=0
                     mode=when(action) { "load"->"localization"; "start"->"mapping"; else->"idle" }
                     if(action=="load") mapName=value.str("name")
-                    runs.values.forEach { it.phase="IDLE"; it.id=""; it.edge=0; it.boost=false; it.cutoff=false; it.points.clear() }
+                    runs.values.forEach { it.phase="IDLE"; it.id=""; it.edge=0; it.boost=false; it.cutoff=false; it.points.clear()
+                        it.pausedPhase="";it.resumeSequence=0;it.breaks.clear() }
                     emit(telemetry())
                     emitMap()
+                }
+                "delete" -> {
+                    val target=value.mapSelection
+                    if(!value.flag("confirm") || (mode=="localization" && target.name==mapName) ||
+                        runs.values.any {it.phase !in terminal || it.phase=="PAUSED"}) {
+                        success=false;message="模拟：请先取消任务并卸载当前地图，删除需要确认"
+                    } else {
+                        val removed=catalog.removeAll {it.mapSelection==target}
+                        extra=packet("deleted" to packet("name" to target.name,"snapshot_id" to target.snapshotId,"already_absent" to !removed))
+                        if(saved.str("name")==target.name) saved=EMPTY
+                        message="模拟：地图已删除"
+                    }
                 }
                 "save","save_end","retry_export" -> {
                     owner="demo"
@@ -224,7 +244,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     }
     private fun points(ps:List<Point>)=JsonArray(ps.map { JsonArray(listOf(JsonPrimitive(it.x),JsonPrimitive(it.y))) })
     private fun telemetry():JsonObject {
-        val active=runs.filterValues { it.phase !in terminal }.keys
+        val active=runs.filterValues { it.phase !in terminal || it.phase=="PAUSED" }.keys
         val ready=tick>=readyAt && mode=="localization"
         val mapId="demo/$mapName"
         val tasks=buildJsonObject {
@@ -233,12 +253,17 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
                 val boostActive=r.boost && r.phase=="FOLLOW" && !r.cutoff
                 val boostError=when {
                     mode!="localization"->"请先加载地图"
-                    active.isNotEmpty() || !boostEditable || runs.values.any {it.phase=="PAUSED"}->"只能在任务开始前设置提速；暂停后请先取消任务"
+                    active.isNotEmpty() || !boostEditable->"只能在任务开始前设置提速；暂停时保持原设置"
                     else->""
                 }
                 val edges=demoEdges.getValue(kind)
                 put(kind,packet("task_type" to kind,"fresh" to (mode=="localization"),"map_id" to mapId,"run_id" to r.id,
                     "phase" to r.phase,"can_start" to (ready && !boostPending && active.isEmpty() && runs.values.none {it.phase=="PAUSED"}),"output_enabled" to false,
+                    "pause_kind" to if(r.phase=="PAUSED" && r.pausedPhase.isNotEmpty()) "user" else "",
+                    "paused_phase" to r.pausedPhase,"resume_sequence" to r.resumeSequence,
+                    "can_resume" to (ready && !boostPending && r.phase=="PAUSED" && r.pausedPhase.isNotEmpty()),
+                    "resume_blockers" to JsonArray(if(ready && r.phase=="PAUSED" && r.pausedPhase.isNotEmpty()) emptyList()
+                        else listOf(packet("code" to "resume","message" to "模拟：尚无可继续的人工暂停任务或定位未就绪"))),
                     "forward_boost_enabled" to r.boost,"forward_boost_active" to boostActive,"forward_boost_editable" to boostEditable,
                     "can_set_forward_boost" to (boostError.isEmpty() && !boostPending),"forward_boost_setting_error" to boostError,
                     "forward_boost_cutoff_m" to .8,"forward_boost_cutoff_reached" to r.cutoff,

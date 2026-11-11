@@ -179,14 +179,14 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     }
     fun foreground(value:Boolean) {
         if(!value) stopManual("app_not_foreground")
-        mutable.value=mutable.value.copy(foreground=value,picking=false,candidate=null)
+        mutable.value=mutable.value.copy(foreground=value,picking=false,candidate=null,deleteTarget=null)
         // Keep an existing link for state observation. No background motion sender.
         if(value && wanted && !mutable.value.connected) { retry?.cancel(); open() }
     }
     fun focusLost()=stopManual("window_focus_lost")
     fun page(value:Page) {
         stopManual("page_changed")
-        mutable.value=mutable.value.copy(page=value,picking=false,candidate=null)
+        mutable.value=mutable.value.copy(page=value,picking=false,candidate=null,deleteTarget=null)
         if(value==Page.MAPS && mutable.value.canMapping("list")) mapping("list")
     }
     fun taskKind(value:String) {
@@ -268,7 +268,10 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         mutable.value=mutable.value.copy(picking=false,candidate=null)
     }
     fun task(action:String) {
-        if(mutable.value.canTaskAction(action)) submit(packet("op" to "task","action" to action,"task_type" to mutable.value.taskKind))
+        val s=StateReducer.tick(mutable.value,SystemClock.elapsedRealtime())
+        if(!s.canTaskAction(action)) return
+        val fields=packet("op" to "task","action" to action,"task_type" to s.taskKind)
+        submit(if(action=="resume") JsonObject(fields+packet("run_id" to s.task.str("run_id"))) else fields)
     }
     fun setForwardBoost(enabled:Boolean) {
         val s=mutable.value
@@ -278,9 +281,30 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         // controller's post-request status before its final reply; pending survives
         // timeout/disconnection and is never cleared by a coincidentally equal value.
     }
-    fun selectMap(name:String) { mutable.value=mutable.value.copy(selectedMap=name) }
+    fun selectMap(name:String,snapshotId:String="") {
+        if(mutable.value.pending.isEmpty())
+            mutable.value=mutable.value.copy(selectedMap=name,selectedSnapshotId=snapshotId,deleteTarget=null)
+    }
+    fun requestMapDeletion() {
+        val s=StateReducer.tick(mutable.value,SystemClock.elapsedRealtime())
+        if(!s.canMapping("delete")) return
+        stopManual("confirm_delete_map")
+        closePreview()
+        mutable.value=mutable.value.copy(deleteTarget=s.mapSelection)
+    }
+    fun dismissMapDeletion() {mutable.value=mutable.value.copy(deleteTarget=null)}
+    fun confirmMapDeletion() {
+        val s=StateReducer.tick(mutable.value,SystemClock.elapsedRealtime())
+        if(!s.canConfirmMapDeletion) {dismissMapDeletion();return}
+        val target=s.deleteTarget!!
+        dismissMapDeletion()
+        submit(packet("op" to "mapping","action" to "delete","name" to target.name,
+            "snapshot_id" to target.snapshotId,"confirm" to true))
+    }
     fun mapping(action:String,name:String="",confirmed:Boolean=false) {
-        val s=mutable.value
+        val s=StateReducer.tick(mutable.value,SystemClock.elapsedRealtime())
+        // Deletion is only submitted through an exact, user-confirmed catalog identity.
+        if(action=="delete") return
         if(!s.canMapping(action) || (action=="discard" && !confirmed)) return
         val fields=mutableMapOf<String,JsonElement>("op" to JsonPrimitive("mapping"),"action" to JsonPrimitive(action))
         if(action in setOf("save","save_end")) {
@@ -297,7 +321,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         val s=mutable.value; val id=UUID.randomUUID().toString()
         val command=JsonObject(base+mapOf("request_id" to JsonPrimitive(id)))
         if(base.str("op")=="mapping" && base.str("action")=="preview") previewRequestId=id
-        val pending=Pending(id,command,SystemClock.elapsedRealtime(),s.task.str("run_id"),s.localization.long("initial_pose_stamp_ns"))
+        val pending=Pending(id,command,SystemClock.elapsedRealtime(),s.task.str("run_id"),s.localization.long("initial_pose_stamp_ns"),s.task.resumeSequence ?: -1)
         mutable.value=s.copy(pending=s.pending+(id to pending))
         if(connection?.send(command)!=true) {
             mutable.value=mutable.value.copy(pending=mutable.value.pending-id)
@@ -310,7 +334,15 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
             mutable.value=s.copy(pending=emptyMap()); log("已清除本地待确认提示；未重发任何操作，请以机器人状态为准")
         }
     }
-    fun closePreview() { previewRequestId=null;mutable.value=mutable.value.copy(preview=null) }
+    fun closePreview() { previewRequestId=null;mutable.value=mutable.value.copy(preview=null,previewName="") }
+    private fun mapDeletionCompleted(target:MapSelection) {
+        closePreview()
+        val s=mutable.value
+        mutable.value=s.copy(catalog=s.catalog.filterNot {it.mapSelection==target},deleteTarget=null,
+            selectedMap=if(s.mapSelection==target) "" else s.selectedMap,
+            selectedSnapshotId=if(s.mapSelection==target) "" else s.selectedSnapshotId)
+        refreshCatalog=true
+    }
     private fun receive(p:JsonObject,grid:GridMap?,receivedAt:Long) {
         applySenderExpiry()
         val s=mutable.value
@@ -347,6 +379,15 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                 val n=StateReducer.telemetry(s,p,SystemClock.elapsedRealtime(),receivedAt)
                 if(n===s) return
                 mutable.value=n
+                if(s.runtime.str("session_id")!=n.runtime.str("session_id")) previewRequestId=null
+                // last_operation can resolve a request whose final reply was lost on reconnect.
+                s.pending.values.filter {it.id !in n.pending && it.command.str("op")=="mapping"}.forEach {request ->
+                    if(request.action=="delete") {
+                        if(n.runtime.obj("last_operation").flag("success")) mapDeletionCompleted(request.command.mapSelection)
+                        refreshCatalog=true
+                    }
+                    if(request.action=="unload" && n.runtime.obj("last_operation").flag("success")) closePreview()
+                }
                 diagnostics.telemetry(p,receivedAt=receivedAt,processedAt=SystemClock.elapsedRealtime())
                 diagnostics.observeApp(n)
                 syncLogs()
@@ -362,29 +403,36 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                 refreshManualIntent()
                 val saved=n.runtime.obj("last_saved")
                 if(saved.isNotEmpty() && saved!=s.runtime.obj("last_saved")) {
-                    mutable.value=mutable.value.copy(selectedMap=saved.str("name"))
+                    mutable.value=mutable.value.copy(selectedMap=saved.str("name"),selectedSnapshotId="")
                     refreshCatalog=true
                 }
                 if(refreshCatalog && mutable.value.canMapping("list")) { refreshCatalog=false;mapping("list") }
             }
             "reply" -> {
                 val id=p.str("request_id")
+                val request=s.pending[id]
                 if(!p.flag("pending")) {
-                    val request=s.pending[id]
                     // A successful service reply must not leave pre-operation readiness usable.
                     mutable.value=s.copy(pending=s.pending-id,receivedAt=if(p.flag("success") && request!=null && !request.readOnly) -1 else s.receivedAt)
                 }
                 log(p.str("message",if(p.flag("success")) "请求已处理，请查看机器人状态" else "请求被拒绝"),LogSource.GATEWAY,
                     details=packet("op" to p["op"],"action" to p["action"],"request_id" to p["request_id"],"success" to p["success"],"pending" to p["pending"]))
+                // A delete failure can still have moved files; refresh without retrying it.
+                if(!p.flag("pending") && request?.command?.str("op")=="mapping" && request.action=="delete") refreshCatalog=true
                 if(p.flag("pending") || !p.flag("success")) return
                 if("maps" in p) {
                     val entries=p.arr("maps").mapNotNull { it as? JsonObject }
-                    mutable.value=mutable.value.copy(catalog=entries,selectedMap=mutable.value.selectedMap.takeIf { n -> entries.any { it.str("name")==n } } ?: entries.firstOrNull()?.str("name").orEmpty())
+                    val selected=entries.singleOrNull {it.mapSelection==mutable.value.mapSelection}?.mapSelection
+                        ?: entries.firstOrNull()?.mapSelection ?: MapSelection("")
+                    mutable.value=mutable.value.copy(catalog=entries,selectedMap=selected.name,selectedSnapshotId=selected.snapshotId,
+                        deleteTarget=mutable.value.deleteTarget?.takeIf {target->entries.count {it.mapSelection==target}==1 && target==selected})
                 }
-                if(grid!=null) { stopManual("map_preview"); mutable.value=mutable.value.copy(preview=grid,previewName=p.str("name")) }
+                if(grid!=null && id==previewRequestId) { stopManual("map_preview"); mutable.value=mutable.value.copy(preview=grid,previewName=p.str("name")) }
+                if(p.obj("deleted").isNotEmpty()) mapDeletionCompleted(p.obj("deleted").mapSelection)
+                if(request?.command?.str("op")=="mapping" && request.action=="unload") closePreview()
                 val saved=p.obj("saved")
                 if(saved.isNotEmpty()) {
-                    mutable.value=mutable.value.copy(selectedMap=saved.str("name"))
+                    mutable.value=mutable.value.copy(selectedMap=saved.str("name"),selectedSnapshotId="")
                     log("已保存：${saved.str("name")}\n${saved.arr("paths").joinToString("\n") { (it as? JsonPrimitive)?.contentOrNull.orEmpty() }}")
                     refreshCatalog=true
                 }

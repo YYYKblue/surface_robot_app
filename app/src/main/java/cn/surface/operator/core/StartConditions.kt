@@ -6,7 +6,7 @@ private val startBlockerLabels=mapOf(
     "task_stale" to "任务不可用或状态过期", "task_service" to "任务服务不可用",
     "localization" to "定位尚未就绪", "feedback" to "反馈数据未就绪", "pose" to "位姿数据未就绪",
     "scan" to "雷达数据未就绪", "bridge" to "硬件控制条件未满足", "bridge_service" to "控制权服务不可用",
-    "map" to "地图未匹配", "clock" to "控制器时钟异常", "phase" to "任务运行中或需先取消暂停任务",
+    "map" to "地图未匹配", "clock" to "控制器时钟异常", "phase" to "任务尚未结束，请按状态继续或取消",
     "task_type" to "任务类型未确认", "schema" to "控制器需要升级", "busy" to "已有任务运行或状态待确认",
     "pending" to "操作处理中", "runtime" to "请先加载地图并等待地图操作结束",
     "preflight" to "控制器尚未确认可以启动"
