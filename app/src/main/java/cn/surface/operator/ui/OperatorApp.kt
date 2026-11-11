@@ -24,6 +24,7 @@ import cn.surface.operator.BuildConfig
 import cn.surface.operator.OperatorViewModel
 import cn.surface.operator.core.*
 import kotlinx.serialization.json.*
+import kotlin.math.roundToInt
 
 val Teal=Color(0xFF087F8C)
 val Ink=Color(0xFF193744)
@@ -179,16 +180,19 @@ private val Background=Color(0xFFF1F5F7)
 }
 
 @Composable private fun HoldButton(label:String,direction:String,s:OperatorState,vm:OperatorViewModel,modifier:Modifier=Modifier) {
-    val enabled=s.canDrive
+    val enabled=s.manualAllowed
     val active=enabled && s.manual.direction==direction
     val currentDirection by rememberUpdatedState<(String)->Unit>(vm::direction)
     val currentCancel by rememberUpdatedState<()->Unit>({vm.stopManual("touch_cancelled")})
     Surface(modifier.sizeIn(minWidth=72.dp,minHeight=72.dp).semantics {contentDescription="按住$label，松开停止主驱动"}
-        .pointerInput(enabled) {
+        .pointerInput(enabled,s.manualControlIdentity) {
             if(enabled) awaitEachGesture {
+                // Waiting for a touch is not a gesture. Recomposition or a new
+                // control identity must not make idle buttons stop auxiliaries.
+                val down=awaitFirstDown(requireUnconsumed=false)
                 var released=false
                 try {
-                    val down=awaitFirstDown(requireUnconsumed=false);down.consume();currentDirection(direction)
+                    down.consume();currentDirection(direction)
                     while(true) {
                         val event=awaitPointerEvent()
                         val pointer=event.changes.find {it.id==down.id}
@@ -205,23 +209,38 @@ private val Background=Color(0xFFF1F5F7)
 }
 @Composable private fun ManualPage(s:OperatorState,vm:OperatorViewModel) {
     Title("手动驾驶","按住运行 · 松开方向键仅停止主驱动")
-    if(!s.driving) Action("启用手动驾驶",s.manualAllowed,onClick=vm::armManual)
-    else Info("手动已使能 · 离开页面或失焦将停用")
-    if(!s.manualAllowed) Info(if(!s.fresh) "等待新鲜遥测" else if(!s.operator) "其他操作端占用控制权" else "任务运行、操作待确认或界面中断时禁止驾驶",true)
-    Text("PWM 档位（非实测航速）",fontWeight=FontWeight.SemiBold)
-    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf(25,50,75).forEach {v->FilterChip(s.manual.speed==v,{vm.manual(s.manual.copy(speed=v))},label={Text("$v%")},enabled=s.canDrive)}}
-    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf("FRONT" to "前轮","BOTH" to "全部","BACK" to "后轮").forEach {(v,label)->FilterChip(s.manual.mode==v,{vm.manual(s.manual.copy(mode=v))},label={Text(label)},enabled=s.canDrive)}}
+    if(!s.manualAllowed) Info(when {
+        !s.fresh -> "等待新鲜遥测"
+        !s.operator -> "其他操作端占用控制权"
+        s.driveOutputBlockReason!=null -> s.driveOutputBlockReason!!
+        else -> "任务运行、操作待确认或界面中断时禁止驾驶"
+    },true)
+    else Text("可直接按方向键或开启辅助输出",style=MaterialTheme.typography.bodySmall,color=Teal)
+    Text(if(s.continuousDrive) "主驱动 PWM · 0–100%" else "主驱动档位 · 旧网关",fontWeight=FontWeight.SemiBold)
+    if(s.continuousDrive) {
+        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
+            OutlinedButton({vm.speed(s.manual.speed-1)},enabled=s.manualAllowed && s.manual.speed>0) {Text("−1")}
+            Text("${s.manual.speed}%",fontSize=22.sp,fontWeight=FontWeight.Bold,color=Teal)
+            OutlinedButton({vm.speed(s.manual.speed+1)},enabled=s.manualAllowed && s.manual.speed<100) {Text("+1")}
+        }
+        Slider(s.manual.speed.toFloat(),{vm.speed(it.roundToInt())},valueRange=0f..100f,steps=99,
+            enabled=s.manualAllowed,modifier=Modifier.semantics {contentDescription="主驱动输出百分比"})
+    }
+    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf(25,50,75).forEach {v->FilterChip(s.manual.speed==v,{vm.speed(v)},label={Text(if(s.continuousDrive) "$v%" else "$v 档")},enabled=s.manualAllowed)}}
+    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf("FRONT" to "前轮","BOTH" to "全部","BACK" to "后轮").forEach {(v,label)->FilterChip(s.manual.mode==v,{vm.driveMode(v)},label={Text(label)},enabled=s.manualAllowed)}}
     Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(8.dp)) {
         HoldButton("↑","FORWARD",s,vm)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             HoldButton("←","LEFT",s,vm)
-            FilledTonalButton({vm.direction("STOP")},enabled=s.canDrive,modifier=Modifier.size(72.dp),shape=RoundedCornerShape(16.dp)){Text("停")}
+            FilledTonalButton({vm.direction("STOP")},enabled=s.manualAllowed,modifier=Modifier.size(72.dp),shape=RoundedCornerShape(16.dp)){Text("停")}
             HoldButton("→","RIGHT",s,vm)
         }
         HoldButton("↓","REVERSE",s,vm)
     }
-    Auxiliary("滚刷",s.manual.brush,s.manual.brushPercent,s.canDrive,{vm.manual(s.manual.copy(brush=it))},{vm.manual(s.manual.copy(brushPercent=it))})
-    Auxiliary("第五电推",s.manual.thrust,s.manual.thrustPercent,s.canDrive && s.telemetry.obj("state").flag("allow_fifth_thruster"),{vm.manual(s.manual.copy(thrust=it))},{vm.manual(s.manual.copy(thrustPercent=it))})
+    Text(s.driveFeedback,style=MaterialTheme.typography.bodySmall,color=Muted)
+    Text(if(s.continuousDrive) "百分比表示 PWM 输出，并非实测航速。0% 仅停主驱动；提高后需重新按方向。" else "旧网关仅支持 25 / 50 / 75 档，并非实测航速。",style=MaterialTheme.typography.bodySmall,color=Muted)
+    Auxiliary("滚刷",s.manual.brush,s.manual.brushPercent,s.manualAllowed,vm::brush,vm::brushPercent)
+    Auxiliary("第五电推",s.manual.thrust,s.manual.thrustPercent,s.manualAllowed && s.telemetry.obj("state").flag("allow_fifth_thruster"),vm::thrust,vm::thrustPercent)
     Text("滚刷和第五电推独立运行；顶部“停止手动输出”关闭全部手动输出。",style=MaterialTheme.typography.bodySmall,color=Muted)
 }
 @Composable private fun Auxiliary(label:String,on:Boolean,value:Int,enabled:Boolean,toggle:(Boolean)->Unit,change:(Int)->Unit) {
@@ -272,7 +291,7 @@ private val Background=Color(0xFFF1F5F7)
     Action("连接机器人"){vm.connect(url)}
     OutlinedButton({vm.connect(url,true)},modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("进入模拟模式 · 不连接硬件")}
     OutlinedButton(vm::disconnect,modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("断开连接 / 释放操作端")}
-    Info("连接后先观察状态。手动页明确启用驾驶后才发送运动意图。\n断线不会主动取消已经启动的自动任务；退出不会结束机器人端建图。")
+    Info("连接后先观察状态。手动页可直接按方向键，无需申请；离页、失焦或中断后需重新操作。\n断线不会主动取消已经启动的自动任务；退出不会结束机器人端建图。")
     Text("当前版本 ${BuildConfig.VERSION_NAME} · f1-operator-v1\n主要适配 11.5 英寸横屏，同时支持竖屏与分屏。\n当前版本面向可信局域网现有 ws:// 网关。",color=Muted)
 }
 @Composable private fun Footer(s:OperatorState) {

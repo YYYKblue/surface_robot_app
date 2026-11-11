@@ -101,6 +101,58 @@ class ManualSenderTest {
         assertTrue(f.connection.stops().isEmpty())
     }
 
+    @Test fun v3NewGestureSendsNeutralThenMotionOnSeparateWriterTicks()=Fixture().use {f ->
+        f.sender.bind(1,f.connection);assertTrue(f.sender.activate(1))
+        f.sender.pump();assertTrue(f.connection.sent.isEmpty())
+        assertTrue(f.sender.arm(1,neutralFirst=true))
+        assertTrue(f.update(ManualIntent("FORWARD",brush=true,thrust=true)))
+        f.sender.pump()
+        val neutral=f.connection.motion().single()
+        assertEquals("STOP",neutral.str("direction"))
+        assertFalse(neutral.flag("brush_enabled"));assertFalse(neutral.flag("thrust_enabled"))
+        // A GUI event immediately after the neutral frame must not bypass the gap.
+        f.now+=10;assertTrue(f.update(ManualIntent("LEFT",brush=true)))
+        f.sender.pump();assertEquals(1,f.connection.motion().size)
+        f.now+=39;f.sender.pump();assertEquals(1,f.connection.motion().size)
+        f.now++;f.sender.pump()
+        assertEquals("LEFT",f.connection.motion().last().str("direction"))
+        assertTrue(f.connection.motion().last().flag("brush_enabled"))
+        assertEquals(listOf(1L,2L),f.connection.motion().map {it.long("seq")})
+        f.sender.clear("control_identity_changed")
+        assertTrue(f.sender.arm(1,neutralFirst=true))
+        assertTrue(f.update(ManualIntent("REVERSE")));f.sender.pump()
+        assertEquals("STOP",f.connection.motion().last().str("direction"))
+        f.now+=50;f.sender.pump()
+        assertEquals("REVERSE",f.connection.motion().last().str("direction"))
+    }
+
+    @Test fun cancellingBetweenNeutralAndMotionNeverSendsTheOldGesture()=Fixture().use {f ->
+        f.sender.bind(1,f.connection);f.sender.activate(1);f.sender.arm(1,neutralFirst=true)
+        assertTrue(f.update());f.sender.pump()
+        f.sender.clear("touch_cancelled")
+        f.now+=50;f.sender.pump()
+        assertEquals(1,f.connection.motion().size)
+        assertEquals("STOP",f.connection.motion().single().str("direction"))
+        assertFalse(f.sender.armed)
+    }
+
+    @Test fun explicitExpiryCheckClearsTheOldLeaseBeforeANewGuiEvent()=Fixture().use {f ->
+        f.arm();assertTrue(f.update(ManualIntent("FORWARD",brush=true)));f.sender.pump()
+        f.now+=250;f.sender.expireIfNeeded(0)
+        assertFalse(f.sender.expired) // Retired callbacks cannot affect the current session.
+        f.sender.expireIfNeeded(1)
+        assertTrue(f.sender.expired);assertFalse(f.sender.armed)
+        assertEquals(1,f.connection.stops().size)
+        f.sender.expireIfNeeded(1)
+        assertEquals(1,f.connection.stops().size)
+        assertTrue(f.sender.arm(1,neutralFirst=true))
+        assertTrue(f.update(ManualIntent("LEFT")));f.sender.pump()
+        assertEquals("STOP",f.connection.motion().last().str("direction"))
+        f.now+=50;f.sender.pump()
+        assertEquals("LEFT",f.connection.motion().last().str("direction"))
+        assertFalse(f.connection.motion().last().flag("brush_enabled"))
+    }
+
     @Test fun resetAndOldEpochCallbacksCannotReplayOrActivatePreviousIntent()=Fixture().use {f ->
         f.arm();assertTrue(f.update());f.sender.pump()
         val next=FakeConnection()

@@ -109,9 +109,10 @@ class DiagnosticRecorder {
                 if(s.pending.isNotEmpty()) add("操作等待确认")
                 if(s.picking) add("正在选择初始位姿")
                 if(s.preview!=null) add("正在预览地图")
-                if(!s.driving) add("尚未启用手动驾驶")
+                if(s.exportingLogs) add("正在导出日志")
+                s.driveOutputBlockReason?.let {add(it)}
             }
-            change("manual_lock",reasons,LogSource.APP,if(reasons.isEmpty()) "手动驾驶已使能" else "手动驾驶已锁定",
+            change("manual_lock",reasons,LogSource.APP,if(reasons.isEmpty()) "可直接手动操作" else "手动驾驶已锁定",
                 packet("reasons" to JsonArray(reasons.map(::JsonPrimitive))))
         }
     }

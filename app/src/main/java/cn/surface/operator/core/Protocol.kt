@@ -137,13 +137,13 @@ class MapTransform(val map: GridMap, width: Double, height: Double,
 data class ManualIntent(val direction: String="STOP", val speed: Int=25, val mode: String="BOTH",
                         val brush: Boolean=false, val brushPercent: Int=25,
                         val thrust: Boolean=false, val thrustPercent: Int=25) {
-    val active get() = direction != "STOP" || brush || thrust
+    val active get() = (direction != "STOP" && speed>0) || (brush && brushPercent!=0) || (thrust && thrustPercent!=0)
     fun cleared() = copy(direction="STOP",brush=false,thrust=false)
     fun encode(seq: Long): JsonObject {
         require(direction in setOf("STOP","FORWARD","REVERSE","LEFT","RIGHT"))
-        require(speed in setOf(25,50,75) && mode in setOf("FRONT","BOTH","BACK"))
+        require(speed in 0..100 && mode in setOf("FRONT","BOTH","BACK"))
         require(brushPercent in -100..100 && thrustPercent in -100..100 && seq >= 0)
-        return packet("op" to "manual_input", "seq" to seq, "direction" to direction,
+        return packet("op" to "manual_input", "seq" to seq, "direction" to if(speed==0) "STOP" else direction,
             "speed_percent" to speed,"mode" to mode,"brush_enabled" to brush,
             "brush_percent" to if(brush) brushPercent else 0,"thrust_enabled" to thrust,
             "thrust_percent" to if(thrust) thrustPercent else 0)

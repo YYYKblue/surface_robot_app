@@ -61,7 +61,7 @@ class TaskRecoveryConnectionTest {
         try {
             vm.connect(address)
             until("initial connection ready") {vm.state.value.fresh}
-            vm.page(Page.MANUAL);vm.armManual();vm.direction("FORWARD")
+            vm.page(Page.MANUAL);vm.direction("FORWARD")
             until("first connection transmitted manual input") {
                 commands.any {it.first==1 && it.second.str("op")=="manual_input" && it.second.str("direction")=="FORWARD"}
             }

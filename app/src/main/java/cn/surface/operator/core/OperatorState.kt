@@ -40,7 +40,8 @@ data class OperatorState(
     val busy get()=telemetry.flag("task_busy") || telemetry.flag("operation_pending") || runtime.flag("busy")
     val taskSupported get()=capabilities.containsAll(setOf("task_selection","initial_pose","start_conditions"))
     val mappingSupported get()=capabilities.containsAll(setOf("mapping","map_catalog"))
-    val manualAllowed get()=operator && foreground && page==Page.MANUAL && !picking && preview==null && !busy && pending.isEmpty()
+    val manualAllowed get()=operator && foreground && page==Page.MANUAL && !picking && preview==null && !busy && pending.isEmpty() &&
+        !exportingLogs && driveOutputBlockReason==null && acceptsManualSpeed(manual.speed)
     val canDrive get()=manualAllowed && driving
     val canSelectTask get()=operator && !busy && pending.isEmpty() && !picking
     val canPose get()=operator && foreground && taskSupported && !busy && pending.isEmpty() && mapMatchesRuntime && map?.frame=="map" && map.revision>0 && telemetry.flag("can_set_initial_pose")
@@ -87,7 +88,8 @@ object StateReducer {
         clientId="",capabilities=emptySet(),receivedAt=-1,driving=false,manual=s.manual.cleared(),picking=false,candidate=null)
     fun hello(s:OperatorState,p:JsonObject):OperatorState {
         val next=StreamReducer.hello(s,p)
-        return if(next===s) s else next.copy(restoreTaskSelection=true)
+        return if(next===s) s else next.copy(restoreTaskSelection=true,
+            manual=next.manual.copy(speed=next.normalizedManualSpeed()))
     }
     fun tracks(s:OperatorState,p:JsonObject):OperatorState=StreamReducer.tracks(s,p)
     fun map(s:OperatorState,p:JsonObject,grid:GridMap?,receivedAt:Long):OperatorState=StreamReducer.map(s,p,grid,receivedAt)
@@ -116,6 +118,10 @@ object StateReducer {
             !confirmed
         }
         var next=s.copy(telemetry=p,now=now,pending=remaining)
+        // A ready Nano can already belong to a new F103 control epoch. Never
+        // carry the previous hold across RC takeover or serial reconnection.
+        if(s.manualControlIdentity!=null && s.manualControlIdentity!=next.manualControlIdentity)
+            next=next.copy(driving=false,manual=next.manual.cleared())
         // The gateway sends map:null + the new session before its first map. Do not
         // discard that new map when the following telemetry first reports the session.
         if(((changed || mapChanged) && (nextSession.isEmpty() || s.mapSession!=nextSession) ||

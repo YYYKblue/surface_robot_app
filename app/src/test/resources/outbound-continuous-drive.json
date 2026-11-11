@@ -1,0 +1,7 @@
+[
+  {"op":"manual_input","seq":1,"direction":"STOP","speed_percent":0,"mode":"BOTH","brush_enabled":false,"brush_percent":0,"thrust_enabled":false,"thrust_percent":0},
+  {"op":"manual_input","seq":2,"direction":"FORWARD","speed_percent":1,"mode":"FRONT","brush_enabled":false,"brush_percent":0,"thrust_enabled":false,"thrust_percent":0},
+  {"op":"manual_input","seq":3,"direction":"LEFT","speed_percent":37,"mode":"BOTH","brush_enabled":true,"brush_percent":-40,"thrust_enabled":false,"thrust_percent":0},
+  {"op":"manual_input","seq":4,"direction":"REVERSE","speed_percent":100,"mode":"BACK","brush_enabled":false,"brush_percent":0,"thrust_enabled":true,"thrust_percent":100},
+  {"op":"manual_input","seq":5,"direction":"STOP","speed_percent":0,"mode":"BOTH","brush_enabled":true,"brush_percent":25,"thrust_enabled":true,"thrust_percent":-100}
+]

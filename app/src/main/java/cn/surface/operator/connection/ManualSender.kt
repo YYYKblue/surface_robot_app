@@ -31,6 +31,8 @@ class ManualSender(
     private var updatedAt=-1L
     private var telemetryAt=-1L
     private var nextAt=0L
+    private var neutralPending=false
+    private var neutralReadyAt=0L
     private var lastSentActive=false
     private var revision=0L
     private var sequence=0L
@@ -65,13 +67,23 @@ class ManualSender(
         true
     }
 
-    /** Explicit user authorization after the GUI has cleared all previous controls. */
-    fun arm(epoch:Int):Boolean=synchronized(lock) {
+    /** Starts a new explicit input gesture; never called by a telemetry/GUI heartbeat. */
+    fun arm(epoch:Int,neutralFirst:Boolean=false):Boolean=synchronized(lock) {
         if(closed || epoch!=currentEpoch || !activated || connection==null) return@synchronized false
         cancelLocked()
         isExpired=false;reason="";isArmed=true
+        neutralPending=neutralFirst
         lock.notifyAll()
         true
+    }
+
+    /** Inspect the old lease before applying a new GUI event, even if its worker ran late. */
+    fun expireIfNeeded(epoch:Int) {
+        val stopped=synchronized(lock) {
+            if(closed || epoch!=currentEpoch || !activated || !isArmed || isExpired) null
+            else expiryLocked(clock())?.let {stopLocked(it,true)}
+        }
+        notifyStopped(stopped)
     }
 
     fun update(epoch:Int,value:ManualIntent,telemetryReceivedAt:Long):Boolean {
@@ -90,7 +102,7 @@ class ManualSender(
                 stopped=stopLocked("telemetry_expired",true)
                 return@synchronized false
             }
-            if(value!=intent) {revision++;nextAt=now}
+            if(value!=intent) {revision++;nextAt=maxOf(now,neutralReadyAt)}
             intent=value;updatedAt=now;telemetryAt=telemetryReceivedAt
             lock.notifyAll()
             true
@@ -113,7 +125,7 @@ class ManualSender(
     private fun cancelLocked() {
         revision++
         isArmed=false;intent=null;updatedAt=-1;telemetryAt=-1
-        nextAt=0;lastSentActive=false
+        nextAt=0;lastSentActive=false;neutralPending=false;neutralReadyAt=0
     }
 
     private fun expiryLocked(now:Long):String? {
@@ -138,15 +150,21 @@ class ManualSender(
         val now=clock()
         expiryLocked(now)?.let {return stopLocked(it,true)}
         val value=intent ?: return null
-        if(now<nextAt || !value.active && !lastSentActive) return null
+        if(now<nextAt || !neutralPending && !value.active && !lastSentActive) return null
         val target=connection ?: return stopLocked("send_not_ready",false)
         val sentRevision=revision
         // Increment only here, never at GUI refresh or while skipping missed ticks.
-        val sent=runCatching {target.send(value.encode(++sequence))}.getOrDefault(false)
+        // v3 requires neutral input in the ready session before accepting motion.
+        // Keep it on the writer cadence: back-to-back WebSocket frames can trigger
+        // the transport's backlog guard, and observation alone must not seize control.
+        val sendingNeutral=neutralPending
+        val outgoing=if(sendingNeutral) value.cleared() else value
+        val sent=runCatching {target.send(outgoing.encode(++sequence))}.getOrDefault(false)
         // A connection callback may synchronously clear/bind. Do not alter its new state.
         if(revision!=sentRevision || connection!==target) return null
         if(!sent) return stopLocked("send_not_ready",true)
-        lastSentActive=value.active
+        lastSentActive=outgoing.active
+        if(sendingNeutral) {neutralPending=false;neutralReadyAt=now+PERIOD_MS}
         nextAt=now+PERIOD_MS
         return null
     }
@@ -171,7 +189,7 @@ class ManualSender(
                 else {
                     val now=clock()
                     val expiresAt=minOf(updatedAt+INTENT_TTL_MS,telemetryAt+TELEMETRY_TTL_MS)
-                    val due=if(value.active || lastSentActive) minOf(nextAt,expiresAt) else expiresAt
+                    val due=if(neutralPending || value.active || lastSentActive) minOf(nextAt,expiresAt) else expiresAt
                     val delay=due-now
                     if(delay>0) lock.wait(delay)
                 }

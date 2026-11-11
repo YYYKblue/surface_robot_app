@@ -53,7 +53,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
                 if(old.driving && !next.driving) {
                     if(manualSender.clear("telemetry_or_permission_expired",sendStop=false))
                         connection?.send(packet("op" to "manual_stop","reason" to "telemetry_or_permission_expired"))
-                    log("控制状态已失效，手动已停用；恢复后需重新启用",reason="telemetry_or_permission_expired")
+                    log("控制状态已失效，已清除手动输出；恢复后请重新按键或开启辅助输出",reason="telemetry_or_permission_expired")
                 }
                 refreshManualIntent()
                 diagnostics.observeApp(mutable.value)
@@ -71,9 +71,9 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         if(!s.driving && !s.manual.active) return
         mutable.value=s.copy(driving=false,manual=s.manual.cleared())
         log(when(reason) {
-            "gui_input_expired" -> "界面操作意图超过 250 ms 未刷新，手动已停用；需重新启用驾驶"
-            "telemetry_expired" -> "遥测超过 800 ms，手动已停用；需重新启用驾驶"
-            else -> "手动发送失败，已清除旧操作；请核对连接后重新启用驾驶"
+            "gui_input_expired" -> "界面操作意图超过 250 ms 未刷新，已清除手动输出；请重新按键或开启辅助输出"
+            "telemetry_expired" -> "遥测超过 800 ms，已清除手动输出；恢复后请重新操作"
+            else -> "手动发送失败，已清除旧操作；请核对连接后重新操作"
         },reason=reason)
     }
     private fun refreshManualIntent() {
@@ -193,28 +193,44 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         val s=mutable.value
         if(s.canSelectTask && value in setOf("rectangle","l")) mutable.value=s.copy(taskKind=value,candidate=null)
     }
-    fun armManual() {
+    private fun updateManual(change:(ManualIntent)->ManualIntent) {
+        // Examine/clear the OLD lease before reading an event's base state. A speed
+        // edit after a stalled GUI must not bring back its previously held direction.
+        manualSender.expireIfNeeded(generation)
+        applySenderExpiry()
         val s=StateReducer.tick(mutable.value,SystemClock.elapsedRealtime())
-        mutable.value=s.copy(driving=false,manual=s.manual.cleared())
-        if(s.manualAllowed && manualSender.arm(generation)) {
-            mutable.value=mutable.value.copy(driving=true)
-            refreshManualIntent()
-            log("手动已使能；按住方向键运行，松开仅停止主驱动")
-        }
-    }
-    fun manual(intent:ManualIntent) {
-        val s=StateReducer.tick(mutable.value,SystemClock.elapsedRealtime())
-        if(!s.canDrive) {
+        if(!s.manualAllowed) {
             stopManual("telemetry_or_permission_expired")
             mutable.value=mutable.value.copy(now=s.now)
             return
         }
         mutable.value=s
-        val m=if(!s.telemetry.obj("state").flag("allow_fifth_thruster")) intent.copy(thrust=false) else intent
-        mutable.value=s.copy(manual=m)
-        refreshManualIntent()
+        var m=change(s.manual)
+        if(!s.acceptsManualSpeed(m.speed) || m.direction !in setOf("STOP","FORWARD","REVERSE","LEFT","RIGHT") ||
+            m.mode !in setOf("FRONT","BOTH","BACK") || m.brushPercent !in -100..100 || m.thrustPercent !in -100..100) return
+        if(m.speed==0) m=m.copy(direction="STOP")
+        if(!s.telemetry.obj("state").flag("allow_fifth_thruster")) m=m.copy(thrust=false)
+        val startsSession=!s.driving && (m.active || m.brush || m.thrust)
+        val resumesOutput=s.continuousDrive && !s.manual.active && m.active
+        if(startsSession || resumesOutput) {
+            // This path is reached only by a new user input, never a GUI heartbeat.
+            // Idle may have released the robot's lease between telemetry frames,
+            // so each neutral-to-active transition needs the v3 neutral handshake.
+            if(!manualSender.arm(generation,neutralFirst=s.continuousDrive)) {
+                stopManual("send_not_ready")
+                return
+            }
+            mutable.value=s.copy(driving=true,manual=m)
+        } else mutable.value=s.copy(manual=m)
+        if(mutable.value.driving) refreshManualIntent()
     }
-    fun direction(value:String)=manual(mutable.value.manual.copy(direction=value))
+    fun direction(value:String)=updateManual {it.copy(direction=value)}
+    fun speed(value:Int)=updateManual {it.copy(speed=value)}
+    fun driveMode(value:String)=updateManual {it.copy(mode=value)}
+    fun brush(value:Boolean)=updateManual {it.copy(brush=value)}
+    fun brushPercent(value:Int)=updateManual {it.copy(brushPercent=value)}
+    fun thrust(value:Boolean)=updateManual {it.copy(thrust=value)}
+    fun thrustPercent(value:Int)=updateManual {it.copy(thrustPercent=value)}
     fun stopManual(reason:String="operator") {
         val s=mutable.value
         // send() may synchronously report a failure and reduce disconnected state.
@@ -224,7 +240,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         // An observing client must not seize the gateway with an unsolicited STOP.
         if(s.driving || s.manual.active) {
             val sent=connection?.send(packet("op" to "manual_stop","reason" to reason))==true
-            log(if(sent) "手动已停用，全部手动输出已请求归零；需重新启用驾驶"
+            log(if(sent) "全部手动输出已请求归零；继续驾驶时重新按键即可"
                 else "手动已停用，但停止请求未发送；请核对连接和机器人状态",reason=reason,
                 details=packet("direction" to s.manual.direction,"brush" to s.manual.brush,"thrust" to s.manual.thrust,"stop_sent" to sent))
         }

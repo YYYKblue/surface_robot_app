@@ -23,6 +23,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     private var readyAt=Int.MAX_VALUE
     private var x=2.0; private var y=2.0; private var yaw=0.0
     private var manual=ManualIntent()
+    private val driveOutput=packet("min" to 0,"max" to 100,"step" to 1,"firmware_protocol_version" to 3,"available" to true)
     private var owner=""
     private var lastOperation=EMPTY
     private var boostPending=false
@@ -51,8 +52,8 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
     @Synchronized override fun connect() {
         live=true; status(true,"模拟连接")
         emit(packet("type" to "hello","protocol" to "f1-operator-v1","client_id" to "demo",
-            "session_id" to streamSession,
-            "capabilities" to JsonArray(listOf("task_selection","initial_pose","start_conditions","task_stop","task_tracks","mapping","map_catalog","diagnostic_history","forward_boost").map(::JsonPrimitive))))
+            "session_id" to streamSession,"drive_output" to driveOutput,
+            "capabilities" to JsonArray(listOf("task_selection","initial_pose","start_conditions","task_stop","task_tracks","mapping","map_catalog","diagnostic_history","forward_boost",CONTINUOUS_DRIVE_CAPABILITY).map(::JsonPrimitive))))
         record("gateway","input_timeout",packet("input_age_ms" to 310,"input_timeout_ms" to 250,"had_lease" to true,"example" to "模拟历史示例，非当前故障"))
         record("bridge","ACK progress timeout",packet("ctrl_age_sec" to .02,"ack_age_sec" to .35,"last_stop_reason" to "ACK progress timeout","example" to "模拟历史示例，非当前故障"))
         record("bridge","模拟桥已就绪",packet("state" to "READY","source" to "NANO","motion_authorized" to false))
@@ -103,6 +104,7 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
         if(op=="manual_input") {
             manual=ManualIntent(value.str("direction"),value.long("speed_percent").toInt(),value.str("mode"),
                 value.flag("brush_enabled"),value.long("brush_percent").toInt(),value.flag("thrust_enabled"),value.long("thrust_percent").toInt())
+            if(manual.speed==0) manual=manual.copy(direction="STOP")
             owner="demo"; return true
         }
         if(op=="manual_stop") {
@@ -254,9 +256,12 @@ class DemoGateway(private val scope:CoroutineScope,private val receive:(String)-
             }
         }
         return packet("type" to "telemetry","active_client" to owner.ifEmpty { null },"task_busy" to (active.isNotEmpty() || runs.values.any {it.phase=="PAUSED"}),"operation_pending" to boostPending,
-            "stream" to packet("session" to streamSession,"sequence" to ++streamSequence,"server_queue_ms" to 0),
+            "stream" to packet("session" to streamSession,"sequence" to ++streamSequence,"server_queue_ms" to 0,"control_age_ms" to 0),
+            "drive_output" to driveOutput,
             "active_tasks" to JsonArray(active.map(::JsonPrimitive)),"can_set_initial_pose" to (mode=="localization" && active.isEmpty()),"tasks" to tasks,
             "state" to packet("connected" to true,"state" to "READY","source" to "NANO","armed" to true,"motion_authorized" to false,"allow_fifth_thruster" to true,"ack_age_sec" to .02,"ctrl_age_sec" to .02,"reason" to "模拟，不驱动硬件",
+                "connection_id" to "demo-serial","epoch" to 1,"result" to "OK","firmware_protocol_version" to 3,"firmware_protocol_compatible" to true,
+                "direction" to manual.direction,"speed_percent" to manual.speed,"mode" to manual.mode,
                 "last_stop_reason" to "","command_remaining_sec" to .15,"max_tx_gap_sec" to .052,"reconnects" to 0,"rejected_commands" to 0,"owner" to "demo"),"control_fresh" to true,
             "pose" to if(mode=="idle") JsonNull else packet("x" to x,"y" to y,"yaw" to yaw),
             "localization" to packet("fresh" to (mode=="localization"),"map_id" to mapId,"ready" to ready,"initial_pose_received" to (poseAt>0),"initial_pose_stamp_ns" to poseAt,"stable_elapsed_sec" to if(ready) 1 else 0,"stable_sec" to 1,"scan_fresh" to true,"pose_fresh" to true),

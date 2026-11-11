@@ -31,6 +31,34 @@ class CoreTest {
         val other=ready().copy(telemetry=JsonObject(readyTelemetry()+mapOf("active_client" to JsonPrimitive("windows"))))
         assertFalse(other.operator);assertFalse(other.canStart);assertFalse(other.canTaskAction("stop"))
     }
+    private fun continuousTelemetry(epoch:Int=1,available:Boolean=true)=JsonObject(readyTelemetry()+packet(
+        "control_fresh" to true,
+        "drive_output" to packet("min" to 0,"max" to 100,"step" to 1,"firmware_protocol_version" to 3,"available" to available),
+        "state" to packet("connected" to true,"connection_id" to "serial","source" to "NANO","epoch" to epoch,
+            "state" to "READY","armed" to true,"result" to "OK","ctrl_age_sec" to 0,"ack_age_sec" to 0)))
+    @Test fun readyEpochChangeClearsMotionEvenWhenPermissionsRemainValid() {
+        val s=ready().copy(page=Page.MANUAL,capabilities=setOf(CONTINUOUS_DRIVE_CAPABILITY),
+            telemetry=continuousTelemetry(),driving=true,manual=ManualIntent("FORWARD",37,brush=true))
+        assertTrue(s.canDrive)
+        val next=StateReducer.telemetry(s,continuousTelemetry(epoch=2),150)
+        assertTrue(next.manualAllowed)
+        assertFalse(next.driving);assertFalse(next.manual.active)
+        val restored=StateReducer.telemetry(next,continuousTelemetry(epoch=2),200)
+        assertTrue(restored.manualAllowed);assertFalse(restored.driving);assertFalse(restored.manual.brush)
+    }
+    @Test fun unavailableThenReadyDoesNotRestorePreviousHeldAction() {
+        val s=ready().copy(page=Page.MANUAL,capabilities=setOf(CONTINUOUS_DRIVE_CAPABILITY),
+            telemetry=continuousTelemetry(),driving=true,manual=ManualIntent("FORWARD",37,brush=true))
+        val blocked=StateReducer.telemetry(s,continuousTelemetry(available=false),150)
+        assertFalse(blocked.manualAllowed);assertFalse(blocked.manual.active)
+        val restored=StateReducer.telemetry(blocked,continuousTelemetry(),200)
+        assertTrue(restored.manualAllowed);assertFalse(restored.driving);assertFalse(restored.manual.active)
+    }
+    @Test fun reconnectingToLegacyGatewayResetsUnsupportedPercentWithoutOutput() {
+        val s=ready().copy(capabilities=setOf(CONTINUOUS_DRIVE_CAPABILITY),driving=true,manual=ManualIntent("FORWARD",37,brush=true))
+        val old=StateReducer.hello(s,packet("client_id" to "new","capabilities" to JsonArray(emptyList())))
+        assertEquals(25,old.manual.speed);assertFalse(old.driving);assertFalse(old.manual.active)
+    }
     @Test fun queuedTelemetryDoesNotRenewDrivingPermission() {
         val s=ready().copy(page=Page.MANUAL,driving=true,manual=ManualIntent("FORWARD"))
         val n=StateReducer.telemetry(s,readyTelemetry(),1500,200)
@@ -89,7 +117,7 @@ class CoreTest {
         assertEquals("LEFT",p.str("direction"));assertEquals(75,p.long("speed_percent").toInt())
         assertEquals(0L,p.long("brush_percent"));assertEquals(0L,p.long("thrust_percent"));assertEquals(42L,p.long("seq"))
     }
-    @Test(expected=IllegalArgumentException::class) fun rejectsUnsupportedContinuousSpeed() {ManualIntent(speed=37).encode(1)}
+    @Test(expected=IllegalArgumentException::class) fun rejectsOutOfRangeDriveSpeed() {ManualIntent(speed=101).encode(1)}
     @Test fun rotatedMapRoundTripIncludesZoomPanAndYFlip() {
         val g=GridMap(100,80,.05,Point(2.4,-1.3),PI/3,2,"map",ByteArray(8000))
         val tr=MapTransform(g,1000.0,600.0,2.3,Point(100.0,-70.0))

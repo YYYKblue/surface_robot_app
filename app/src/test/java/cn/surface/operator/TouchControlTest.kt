@@ -3,6 +3,7 @@ package cn.surface.operator
 import android.os.Looper
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.lifecycle.ViewModelProvider
 import cn.surface.operator.core.*
 import org.junit.Assert.*
@@ -28,8 +29,13 @@ class TouchControlTest {
             repeat(20) {Thread.sleep(30);shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(50))}
             compose.runOnIdle {assertTrue(vm.state.value.fresh);assertNotNull(vm.state.value.map)}
             compose.onNodeWithText("手动驾驶").performClick()
-            compose.onNodeWithText("启用手动驾驶").performClick()
-            compose.runOnIdle {vm.manual(vm.state.value.manual.copy(brush=true))}
+            compose.onNodeWithText("启用手动驾驶").assertDoesNotExist()
+            compose.runOnIdle {vm.brush(true)}
+            val speed=compose.onNodeWithContentDescription("主驱动输出百分比")
+            speed.performSemanticsAction(SemanticsActions.SetProgress) {it(0f)}
+            compose.runOnIdle {assertEquals(0,vm.state.value.manual.speed);assertTrue(vm.state.value.manual.brush)}
+            speed.performSemanticsAction(SemanticsActions.SetProgress) {it(37f)}
+            compose.runOnIdle {assertEquals("STOP",vm.state.value.manual.direction);assertTrue(vm.state.value.manual.brush)}
             val forward=compose.onNodeWithContentDescription("按住↑，松开停止主驱动")
             forward.performTouchInput {down(center)}
             compose.runOnIdle {assertEquals("FORWARD",vm.state.value.manual.direction);assertTrue(vm.state.value.manual.brush)}
@@ -38,6 +44,10 @@ class TouchControlTest {
             forward.performTouchInput {down(center)}
             forward.performTouchInput {cancel()}
             compose.runOnIdle {assertFalse(vm.state.value.manual.active);assertFalse(vm.state.value.driving)}
+            // The next touch works directly; it cannot revive the cleared brush.
+            forward.performTouchInput {down(center)}
+            compose.runOnIdle {assertEquals("FORWARD",vm.state.value.manual.direction);assertFalse(vm.state.value.manual.brush)}
+            forward.performTouchInput {up()}
         } finally {compose.runOnIdle {vm.disconnect()}}
     }
 }
