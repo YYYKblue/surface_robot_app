@@ -2,6 +2,7 @@ package cn.surface.operator
 
 import android.app.Application
 import android.os.SystemClock
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cn.surface.operator.connection.*
@@ -31,6 +32,14 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     private val manualSender=ManualSender(SystemClock::elapsedRealtime,{epoch,reason ->
         viewModelScope.launch(Dispatchers.Main) { senderStopped(epoch,reason) }
     })
+    private val underController=UnderwaterController(viewModelScope,log={message,details ->
+        // Independent events share the bounded export log, but carry their own target.
+        diagnostics.append(LogSource.UNDERWATER,message,details,targetOverride=details.str("address").ifBlank {"水下模拟"})
+        syncLogs()
+    })
+    val underwater=underController.state
+    val savedUnderUrl get()=preferences.getString("under_url",null)
+        ?: runCatching {underwaterUrl(savedUrl)}.getOrDefault("ws://192.168.1.188:8766")
     private val incoming=GatewayInbox(viewModelScope,SystemClock::elapsedRealtime,
         deliver={value -> if(value.epoch==generation) receive(value.packet,value.grid,value.receivedAt)},
         report={epoch,message,fatal -> viewModelScope.launch {
@@ -40,6 +49,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
             }
         }})
     init {
+        updateUnderVisibility()
         viewModelScope.launch {
             while(isActive) {
                 delay(50)
@@ -92,14 +102,17 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     fun beginLogExport():Boolean {
         if(mutable.value.exportingLogs) return false
         stopManual("diagnostics_export")
-        logExportSnapshot=diagnosticReport(mutable.value,BuildConfig.VERSION_NAME)
+        underController.stop("diagnostics_export")
+        logExportSnapshot=diagnosticReport(mutable.value,BuildConfig.VERSION_NAME,underwater.value)
         mutable.value=mutable.value.copy(exportingLogs=true)
+        updateUnderVisibility()
         return true
     }
     fun finishLogExport(uri:android.net.Uri?) {
         val text=logExportSnapshot;logExportSnapshot=null
         if(uri==null || text==null) {
             mutable.value=mutable.value.copy(exportingLogs=false)
+            updateUnderVisibility()
             if(uri!=null) notice("导出快照已失效，请重新导出")
             return
         }
@@ -114,7 +127,7 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
             } catch(e:Exception) {
                 if(e is CancellationException) throw e
                 notice("日志保存失败：${e.message}")
-            } finally {mutable.value=mutable.value.copy(exportingLogs=false)}
+            } finally {mutable.value=mutable.value.copy(exportingLogs=false);updateUnderVisibility()}
         }
     }
     private fun log(message:String,source:LogSource=LogSource.APP,reason:String=message,details:JsonObject=EMPTY) {
@@ -137,8 +150,26 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         }
         // Explicitly choosing a new target starts a separate UI session.
         mutable.value=OperatorState(demo=demo,page=Page.TASK,foreground=mutable.value.foreground,connection="连接中…",logs=diagnostics.snapshot(),exportingLogs=mutable.value.exportingLogs)
+        updateUnderVisibility()
         open()
+        if(demo) connectUnderwater("",demo=true)
     }
+    private fun updateUnderVisibility() = underController.visible(
+        mutable.value.page in setOf(Page.TASK,Page.MANUAL) && !mutable.value.exportingLogs)
+    fun connectUnderwater(address:String,demo:Boolean=false) {
+        if(!demo) {
+            val valid=runCatching {underwaterUrl(address.trim())}.isSuccess
+            if(!valid) {notice("水下地址必须是有效的 ws:// 或 wss:// 地址");return}
+            preferences.edit {putString("under_url",address.trim())}
+        }
+        underController.connect(address.trim(),demo)
+        underController.foreground(mutable.value.foreground)
+        updateUnderVisibility()
+    }
+    fun disconnectUnderwater()=underController.disconnect()
+    fun underDirection(value:String)=underController.direction(value)
+    fun underSpeed(value:Int)=underController.speed(value)
+    fun stopUnderwater(reason:String="operator")=underController.stop(reason)
     private fun open() {
         if(!wanted || !mutable.value.foreground) return
         connection?.close()
@@ -179,14 +210,17 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
     }
     fun foreground(value:Boolean) {
         if(!value) stopManual("app_not_foreground")
+        underController.foreground(value)
         mutable.value=mutable.value.copy(foreground=value,picking=false,candidate=null,deleteTarget=null)
         // Keep an existing link for state observation. No background motion sender.
         if(value && wanted && !mutable.value.connected) { retry?.cancel(); open() }
     }
-    fun focusLost()=stopManual("window_focus_lost")
+    fun focusLost() {stopManual("window_focus_lost");underController.stop("window_focus_lost")}
     fun page(value:Page) {
         stopManual("page_changed")
+        underController.stop("page_changed")
         mutable.value=mutable.value.copy(page=value,picking=false,candidate=null,deleteTarget=null)
+        updateUnderVisibility()
         if(value==Page.MAPS && mutable.value.canMapping("list")) mapping("list")
     }
     fun taskKind(value:String) {
@@ -246,12 +280,16 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
         }
     }
     fun explicitStop() {
+        stopSurfaceExplicit()
+        underController.stop("operator_both")
+    }
+    fun stopSurfaceExplicit() {
         val s=mutable.value
         mutable.value=s.copy(driving=false,manual=s.manual.cleared())
         manualSender.clear("operator",sendStop=false)
         val sent=s.operator && connection?.send(packet("op" to "manual_stop","reason" to "operator"))==true
-        log(if(sent) "已请求停止手动输出；自动任务需使用停止任务"
-            else "停止请求未发送：连接不可用或无操作权限；请核对机器人状态",reason="operator",details=packet("stop_sent" to sent))
+        log(if(sent) "已请求停止水面手动输出；自动任务需使用暂停或取消"
+            else "水面停止请求未发送：连接不可用或无操作权限；请核对机器人状态",reason="operator",details=packet("stop_sent" to sent))
     }
     fun pick(enabled:Boolean) {
         stopManual("initial_pose_edit")
@@ -440,5 +478,5 @@ class OperatorViewModel(application: Application):AndroidViewModel(application) 
             "error" -> { stopManual("gateway_error"); log("网关错误：${p.str("message")}",LogSource.GATEWAY) }
         }
     }
-    override fun onCleared() { wanted=false; stopManual("app_closed"); manualSender.close(); connection?.close(); incoming.close() }
+    override fun onCleared() { wanted=false; stopManual("app_closed"); underController.close(); manualSender.close(); connection?.close(); incoming.close() }
 }

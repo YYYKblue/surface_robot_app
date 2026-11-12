@@ -34,25 +34,41 @@ private val Background=Color(0xFFF1F5F7)
 
 @Composable fun OperatorApp(vm:OperatorViewModel) {
     val s by vm.state.collectAsStateWithLifecycle()
+    val under by vm.underwater.collectAsStateWithLifecycle()
     MaterialTheme(colorScheme=lightColorScheme(primary=Teal,secondary=Ink,background=Background,surface=Color.White,error=Danger)) {
         Surface(Modifier.fillMaxSize(),color=Background) {
             Column(Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
-                Header(s,vm)
+                Header(s,under,vm)
                 BoxWithConstraints(Modifier.weight(1f)) {
-                    val wide=maxWidth>=900.dp
-                    val controlWidth=if(maxWidth>=1200.dp) 350.dp else 316.dp
+                    val screenWidth=maxWidth
+                    val wide=screenWidth>=1000.dp
+                    val controlWidth=if(screenWidth>=1200.dp) 350.dp else 316.dp
+                    val dualControls=s.page in setOf(Page.TASK,Page.MANUAL)
                     if(wide) Row(Modifier.fillMaxSize().padding(12.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                         Navigation(s,vm,true)
                         if(s.page in setOf(Page.TASK,Page.MANUAL,Page.MAPPING)) {
                             MapPanel(s,vm::candidate,Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(18.dp)))
                             Panel(Modifier.width(controlWidth).fillMaxHeight()) { PageContent(s,vm) }
+                            if(dualControls) Panel(Modifier.width(if(screenWidth>=1200.dp) 280.dp else 264.dp).fillMaxHeight()) {
+                                UnderwaterPanel(under,vm::underDirection,vm::underSpeed,vm::stopUnderwater,{vm.page(Page.SETTINGS)})
+                            }
                         } else if(s.page==Page.DIAGNOSTICS) DiagnosticsPanel(s,vm,Modifier.weight(1f).fillMaxHeight())
                         else Panel(Modifier.weight(1f).fillMaxHeight()) { PageContent(s,vm) }
                     } else Column(Modifier.fillMaxSize()) {
                         Navigation(s,vm,false)
                         if(s.page in setOf(Page.TASK,Page.MANUAL,Page.MAPPING)) {
                             MapPanel(s,vm::candidate,Modifier.fillMaxWidth().weight(1f).heightIn(min=180.dp))
-                            Panel(Modifier.fillMaxWidth().weight(1.1f)) { PageContent(s,vm) }
+                            if(dualControls && screenWidth>=650.dp) Row(Modifier.fillMaxWidth().weight(1.7f).padding(6.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                Panel(Modifier.weight(1f).fillMaxHeight()) {PageContent(s,vm)}
+                                Panel(Modifier.weight(1f).fillMaxHeight()) {
+                                    UnderwaterPanel(under,vm::underDirection,vm::underSpeed,vm::stopUnderwater,{vm.page(Page.SETTINGS)})
+                                }
+                            } else if(dualControls) Column(Modifier.fillMaxWidth().weight(2f),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                                Panel(Modifier.fillMaxWidth().weight(1f)) {PageContent(s,vm)}
+                                Panel(Modifier.fillMaxWidth().weight(1f)) {
+                                    UnderwaterPanel(under,vm::underDirection,vm::underSpeed,vm::stopUnderwater,{vm.page(Page.SETTINGS)})
+                                }
+                            } else Panel(Modifier.fillMaxWidth().weight(1.1f)) { PageContent(s,vm) }
                         } else if(s.page==Page.DIAGNOSTICS) DiagnosticsPanel(s,vm,Modifier.fillMaxSize())
                         else Panel(Modifier.fillMaxSize()) { PageContent(s,vm) }
                     }
@@ -75,15 +91,15 @@ private val Background=Color(0xFFF1F5F7)
         }
     }
 }
-@Composable private fun Header(s:OperatorState,vm:OperatorViewModel) {
+@Composable private fun Header(s:OperatorState,under:UnderwaterState,vm:OperatorViewModel) {
     Row(Modifier.fillMaxWidth().background(Ink).padding(horizontal=16.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(16.dp)) {
         Column(Modifier.weight(1f)) {
-            Text("SURFACE / 水面机器人",color=Color.White,fontWeight=FontWeight.Bold,fontSize=19.sp)
-            Text(if(s.demo) "模拟模式 · 不连接硬件" else s.connection,color=if(s.fresh) Color(0xFF89E4CB) else Color(0xFFF2CE8A),fontSize=12.sp)
+            Text("水面 / 水下机器人",color=Color.White,fontWeight=FontWeight.Bold,fontSize=19.sp)
+            Text("水面：${if(s.demo) "模拟" else s.connection} · 水下：${if(under.demo) "模拟" else under.connection}",color=Color(0xFFE0EBEF),fontSize=12.sp)
         }
         if(s.connected) Text(if(!s.fresh) "数据过期" else if(!s.operator) "其他端控制" else if(s.driving) "手动驾驶" else "观察 / 待操作",color=Color.White,fontSize=13.sp)
         if(!s.taskResumeSupported && (s.busy || s.canTaskAction("stop"))) Button(onClick={vm.task("stop")},enabled=s.canTaskAction("stop"),colors=ButtonDefaults.buttonColors(containerColor=Danger),shape=RoundedCornerShape(12.dp)) {Text("停止任务")}
-        Button(onClick=vm::explicitStop,enabled=s.operator,colors=ButtonDefaults.buttonColors(containerColor=Danger),shape=RoundedCornerShape(12.dp),contentPadding=PaddingValues(14.dp,12.dp)) {Text("停止手动输出")}
+        Button(onClick=vm::explicitStop,colors=ButtonDefaults.buttonColors(containerColor=Danger),shape=RoundedCornerShape(12.dp),contentPadding=PaddingValues(14.dp,12.dp)) {Text("两台手动停止")}
     }
 }
 @Composable private fun Navigation(s:OperatorState,vm:OperatorViewModel,vertical:Boolean) {
@@ -168,7 +184,7 @@ private val Background=Color(0xFFF1F5F7)
     }
     if(s.taskPaused && s.taskResumeSupported && task.str("paused_phase").isNotBlank())
         Text("暂停前阶段：${phaseLabels[task.str("paused_phase")] ?: task.str("paused_phase")}",style=MaterialTheme.typography.bodySmall,color=Muted)
-    Text(if(s.taskResumeSupported) "人工暂停关闭任务输出并保留进度，仍占用任务；条件满足后可继续。故障停机需取消并排障。取消结束原任务；顶部红色按钮仅停止手动输出。暂停不代表船体已物理停稳。"
+    Text(if(s.taskResumeSupported) "人工暂停关闭任务输出并保留进度，仍占用水面任务；条件满足后可继续。故障停机需取消并排障。取消结束原任务；顶部红色按钮停止两台手动输出。暂停不代表船体已物理停稳。"
         else "当前网关不支持断点继续，暂停后需取消再开始。停止请求成功不代表船体惯性漂移已结束。",style=MaterialTheme.typography.bodySmall,color=Muted)
     if(task.str("run_id").isNotBlank()) Text("任务 ${task.str("run_id")}\n起始墙 ${task.str("start_edge_id","—")} · 当前墙 ${task.str("current_edge_id","—")}",color=Muted)
     if(task.str("reason").isNotBlank()) Text(task.str("reason"),color=Muted)
@@ -212,7 +228,7 @@ private val Background=Color(0xFFF1F5F7)
     }
 }
 @Composable private fun ManualPage(s:OperatorState,vm:OperatorViewModel) {
-    Title("手动驾驶","按住运行 · 松开方向键仅停止主驱动")
+    Title("水面手动驾驶","按住运行 · 松开方向键仅停止主驱动")
     if(!s.manualAllowed) Info(when {
         !s.fresh -> "等待新鲜遥测"
         !s.operator -> "其他操作端占用控制权"
@@ -220,6 +236,16 @@ private val Background=Color(0xFFF1F5F7)
         else -> "任务运行、操作待确认或界面中断时禁止驾驶"
     },true)
     else Text("可直接按方向键或开启辅助输出",style=MaterialTheme.typography.bodySmall,color=Teal)
+    Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        HoldButton("↑","FORWARD",s,vm)
+        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            HoldButton("←","LEFT",s,vm)
+            FilledTonalButton({vm.direction("STOP")},enabled=s.manualAllowed,modifier=Modifier.size(72.dp),shape=RoundedCornerShape(16.dp)){Text("停")}
+            HoldButton("→","RIGHT",s,vm)
+        }
+        HoldButton("↓","REVERSE",s,vm)
+    }
+    Action("水面手动停止",danger=true,onClick=vm::stopSurfaceExplicit)
     Text(if(s.continuousDrive) "主驱动 PWM · 0–100%" else "主驱动档位 · 旧网关",fontWeight=FontWeight.SemiBold)
     if(s.continuousDrive) {
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
@@ -232,20 +258,11 @@ private val Background=Color(0xFFF1F5F7)
     }
     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf(25,50,75).forEach {v->FilterChip(s.manual.speed==v,{vm.speed(v)},label={Text(if(s.continuousDrive) "$v%" else "$v 档")},enabled=s.manualAllowed)}}
     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf("FRONT" to "前轮","BOTH" to "全部","BACK" to "后轮").forEach {(v,label)->FilterChip(s.manual.mode==v,{vm.driveMode(v)},label={Text(label)},enabled=s.manualAllowed)}}
-    Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        HoldButton("↑","FORWARD",s,vm)
-        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            HoldButton("←","LEFT",s,vm)
-            FilledTonalButton({vm.direction("STOP")},enabled=s.manualAllowed,modifier=Modifier.size(72.dp),shape=RoundedCornerShape(16.dp)){Text("停")}
-            HoldButton("→","RIGHT",s,vm)
-        }
-        HoldButton("↓","REVERSE",s,vm)
-    }
     Text(s.driveFeedback,style=MaterialTheme.typography.bodySmall,color=Muted)
     Text(if(s.continuousDrive) "百分比表示 PWM 输出，并非实测航速。0% 仅停主驱动；提高后需重新按方向。" else "旧网关仅支持 25 / 50 / 75 档，并非实测航速。",style=MaterialTheme.typography.bodySmall,color=Muted)
     Auxiliary("滚刷",s.manual.brush,s.manual.brushPercent,s.manualAllowed,vm::brush,vm::brushPercent)
     Auxiliary("第五电推",s.manual.thrust,s.manual.thrustPercent,s.manualAllowed && s.telemetry.obj("state").flag("allow_fifth_thruster"),vm::thrust,vm::thrustPercent)
-    Text("滚刷和第五电推独立运行；顶部“停止手动输出”关闭全部手动输出。",style=MaterialTheme.typography.bodySmall,color=Muted)
+    Text("滚刷和第五电推独立运行；“水面手动停止”仅停止水面输出，顶部“两台手动停止”同时请求两台手动输出归零。",style=MaterialTheme.typography.bodySmall,color=Muted)
 }
 @Composable private fun Auxiliary(label:String,on:Boolean,value:Int,enabled:Boolean,toggle:(Boolean)->Unit,change:(Int)->Unit) {
     HorizontalDivider()
@@ -303,12 +320,23 @@ private val Background=Color(0xFFF1F5F7)
 }
 @Composable private fun Settings(s:OperatorState,vm:OperatorViewModel) {
     var url by remember {mutableStateOf(vm.savedUrl)}
-    Title("连接设置","平板与 Nano 接入同一局域网")
+    var underUrl by remember {mutableStateOf(vm.savedUnderUrl)}
+    val under by vm.underwater.collectAsStateWithLifecycle()
+    Title("连接设置","平板与 Nano 接入同一局域网，两台连接分别管理")
+    Text("水面机器人",fontWeight=FontWeight.SemiBold,color=Ink)
     OutlinedTextField(url,{url=it},label={Text("网关 WebSocket 地址")},modifier=Modifier.fillMaxWidth(),singleLine=true)
     Action("连接机器人"){vm.connect(url)}
-    OutlinedButton({vm.connect(url,true)},modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("进入模拟模式 · 不连接硬件")}
     OutlinedButton(vm::disconnect,modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("断开连接 / 释放操作端")}
-    Info("连接后先观察状态。手动页可直接按方向键，无需申请；离页、失焦或中断后需重新操作。\n断线不会主动取消已经启动的自动任务；退出不会结束机器人端建图。")
+    HorizontalDivider()
+    Text("水下机器人 · H7 V6",fontWeight=FontWeight.SemiBold,color=Ink)
+    Text(under.connection,style=MaterialTheme.typography.bodySmall,color=Muted)
+    OutlinedTextField(underUrl,{underUrl=it},label={Text("水下 WebSocket 地址")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+    OutlinedButton({underUrl=runCatching {underwaterUrl(url)}.getOrDefault(underUrl)},modifier=Modifier.fillMaxWidth()) {Text("使用水面主机 · 端口 8766")}
+    Action("连接水下机器人"){vm.connectUnderwater(underUrl)}
+    OutlinedButton(vm::disconnectUnderwater,modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("断开水下连接")}
+    HorizontalDivider()
+    OutlinedButton({vm.connect(url,true)},modifier=Modifier.fillMaxWidth().heightIn(min=52.dp)){Text("进入模拟模式 · 不连接硬件")}
+    Info("两台可单独连接；水面清洗任务、地图和控制权不限制水下操作。清洗作业与手动驾驶页可操作水下，手动页可同时操作两台。\n离页、失焦或中断后需重新操作。断线不会主动取消水面自动任务，退出不会结束机器人端建图。")
     Text("当前版本 ${BuildConfig.VERSION_NAME} · f1-operator-v1\n主要适配 11.5 英寸横屏，同时支持竖屏与分屏。\n当前版本面向可信局域网现有 ws:// 网关。",color=Muted)
 }
 @Composable private fun Footer(s:OperatorState) {

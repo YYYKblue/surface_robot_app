@@ -6,7 +6,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.ArrayDeque
 
-enum class LogSource(val label:String) { APP("App"), GATEWAY("网关"), BRIDGE("串口桥") }
+enum class LogSource(val label:String) { APP("App"), GATEWAY("网关"), BRIDGE("串口桥"), UNDERWATER("水下 H7") }
 
 data class DiagnosticEntry(
     val key:Long, val timeMillis:Long, val source:LogSource, val reason:String,
@@ -46,8 +46,9 @@ class DiagnosticRecorder {
     }
     fun clear() { entries.clear();revision++ } // Keep cursors so the next telemetry cannot replay cleared history.
     fun append(source:LogSource,reason:String,details:JsonObject=EMPTY,timeMillis:Long=System.currentTimeMillis(),
-               session:String="",eventId:Long?=null,nanoTime:Boolean=false) {
-        entries.addLast(DiagnosticEntry(++key,timeMillis,source,reason.take(1000),sanitize(details),session,eventId,nanoTime,target))
+               session:String="",eventId:Long?=null,nanoTime:Boolean=false,targetOverride:String?=null) {
+        entries.addLast(DiagnosticEntry(++key,timeMillis,source,reason.take(1000),sanitize(details),session,eventId,nanoTime,
+            (targetOverride ?: target).take(300)))
         while(entries.size>MAX_ENTRIES) entries.removeFirst()
         revision++
     }
@@ -137,7 +138,7 @@ class DiagnosticRecorder {
     }
 }
 
-fun diagnosticReport(s:OperatorState,version:String):String=buildString {
+fun diagnosticReport(s:OperatorState,version:String,under:UnderwaterState?=null):String=buildString {
     appendLine("SurfaceOperator $version 诊断日志")
     appendLine("导出时间：${java.time.OffsetDateTime.now()}")
     appendLine("连接：${s.connection}；遥测：${if(s.fresh) "新鲜" else "已过期/未收到"}")
@@ -147,6 +148,11 @@ fun diagnosticReport(s:OperatorState,version:String):String=buildString {
     appendLine("记录数：${s.logs.size}；协商能力：${s.capabilities.sorted().joinToString()}")
     appendLine("最近收到的桥状态（可能已过期）："+JsonObject(s.telemetry.obj("state").filterKeys {it in diagnosticFields.keys}))
     appendLine("最近收到的显示链路指标（可能已过期）：${s.telemetry.obj("stream")}；本地接收：${s.telemetry.obj("_transport")}")
+    if(under!=null) {
+        appendLine("水下独立连接：${under.connection}；模式：${if(under.demo) "模拟，不连接硬件" else "机器人连接"}")
+        appendLine("水下 H7 累计反馈：${if(under.feedbackFresh) "新鲜（小于 250 ms）" else "已过期/未收到"}")
+        appendLine("最近收到的 H7 状态（可能已过期）：${under.report}")
+    }
     appendLine()
     s.logs.asReversed().forEach {appendLine(it.exportLine())}
 }

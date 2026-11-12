@@ -1,0 +1,9 @@
+[
+  {"protocol":"under-operator-v1","device":"h7_under_original_v6","op":"hello","client":"f1-operator-android","version":1},
+  {"protocol":"under-operator-v1","device":"h7_under_original_v6","op":"manual_input","seq":1,"control_generation":7,"direction":"STOP","speed_percent":0},
+  {"protocol":"under-operator-v1","device":"h7_under_original_v6","op":"manual_input","seq":2,"control_generation":7,"direction":"FORWARD","speed_percent":37},
+  {"protocol":"under-operator-v1","device":"h7_under_original_v6","op":"manual_input","seq":3,"control_generation":7,"direction":"REVERSE","speed_percent":100},
+  {"protocol":"under-operator-v1","device":"h7_under_original_v6","op":"manual_input","seq":4,"control_generation":7,"direction":"LEFT","speed_percent":1},
+  {"protocol":"under-operator-v1","device":"h7_under_original_v6","op":"manual_input","seq":5,"control_generation":7,"direction":"RIGHT","speed_percent":25},
+  {"protocol":"under-operator-v1","device":"h7_under_original_v6","op":"manual_stop","reason":"operator"}
+]
